@@ -138,7 +138,7 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 | 2 | `geom` | polígono, homografia (com `RemapHomography`, que já cobre a retificação de N1), ajuste de curva, remap | **pronto** |
 | 3 | `detect` | DBNet + contornos + expansão de polígono | **funcionando** — validado com imagem real contra o ONNX Runtime (99,999% de similaridade) e testado em dois documentos reais da Frota Macedo (102 e 60 regiões, ver "Testado em documento real" abaixo) |
 | 4 | `dewarp` | medidor de deformação (decide N0/N1/N2/N3 a partir dos polígonos), retificação por linha de N2 — e N3 depois | **pronto** (N3 fica para quando entrar rede) |
-| 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | parcial — o grafo do modelo escolhido já monta, executa e bate com o ONNX Runtime (ver "SVTR: o grafo já roda" abaixo); falta o pré-processamento de linha e a decodificação CTC |
+| 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | **funcionando** — pré-processamento de linha, grafo e decodificação CTC validados com linha de texto real de documento da Frota Macedo (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais" abaixo); falta ligar a um pipeline de ponta a ponta com `detect`+`layout` e lotear mais de uma linha por vez |
 | 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; colunas e tabela faltam |
 | 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; ligar aos campos de cada tipo de documento falta |
 
@@ -510,13 +510,96 @@ divergência de lógica -- ordens de grandeza menor que a diferença de
 JPEG-vs-PNG que a fase 3 encontrou (99,999%), porque aqui a entrada não
 passou por nenhum decodificador de imagem com lugar para variar.
 
-**O que falta para a fase 5 fechar:** pré-processamento de linha (recorte
-já vem do detector + dewarp; falta redimensionar para a altura fixa que a
-rede espera, 48px, mantendo proporção, e decidir o que fazer com largura
-maior que o lote), e a decodificação CTC (colapsar a saída `[T,187]` em
-texto, removendo repetição e o token em branco). O grafo em si -- a parte
-que testar contra um modelo real de verdade sempre revela -- já está pronto
-e validado.
+### `recog`: pré-processamento de linha e decodificação CTC -- 14/09/2026
+
+Com o grafo validado, faltavam as duas pontas: preparar a linha de texto
+recortada antes de entrar na rede, e traduzir a saída dela de volta para
+texto. As duas viraram o pacote `recog`.
+
+**Pré-processamento (`recog.Preprocess`).** Replica `resize_norm_img` de
+`tools/infer/predict_rec.py` -- a função que roda de verdade para o
+algoritmo `"SVTR_LCNet"` (a família PP-OCRv3/v4, o caso deste modelo).
+Existe **outra** função no mesmo arquivo com nome quase igual,
+`resize_norm_img_svtr`, mas ela só roda para uma lista diferente de
+algoritmos (`"SVTR"`, `"SATRN"`, `"ParseQ"`, `"CPPD"`) -- as duas foram
+conferidas lado a lado na fonte para não trocar uma pela outra, o tipo de
+detalhe que só aparece lendo o dispatch inteiro, não só a assinatura da
+função. Algoritmo: redimensiona para a altura fixa (48px) preservando a
+proporção; a largura alvo é `max(320/48, proporção_da_linha) × 48`
+arredondado -- 320 é o padrão do modelo, mas uma linha proporcionalmente
+mais larga cresce além disso; preenche com zero a área que sobra à
+direita. Normalização `(pixel/255 - 0,5) / 0,5` igual nos três canais --
+diferente da detecção, que usa média/desvio do ImageNet por canal. Ordem
+de canal continua BGR sem conversão, pela mesma razão já documentada em
+`detect.Preprocess`.
+
+**Decodificação (`recog.DecodeCTC`).** Replica `CTCLabelDecode.decode` de
+`ppocr/postprocess/rec_postprocess.py`: por posição de tempo, pega o
+índice de maior probabilidade; colapsa repetição consecutiva do MESMO
+índice cru (inclusive quando o índice repetido é o branco); só depois
+descarta o branco. A ordem importa -- é o que separa duas letras iguais
+seguidas (dois picos do mesmo índice) de letra-branco-letra (a mesma letra
+duas vezes, de propósito). `recog.Charset` mapeia índice para caractere;
+a ERA não empacota dicionário nenhum (mesmo motivo de não empacotar peso
+de modelo) -- quem usa a biblioteca lê o arquivo de dicionário do modelo e
+monta o `Charset`.
+
+### Um dicionário incompleto, achado testando linha de texto real
+
+`latin_dict.txt` (fonte primária do PaddleOCR) tem 185 linhas. Com o token
+em branco, `1 + 185 = 186` -- mas a rede tem **187** classes de saída. A
+diferença só apareceu rodando texto de verdade (não os testes sintéticos
+do `graph`, que não têm dicionário nenhum para conferir): o texto
+decodificado saía com os índices deslocados, ilegível.
+
+Causa: o carregador de dicionário do PaddleOCR
+(`BaseRecLabelDecode.__init__`) tem uma opção `use_space_char` que, quando
+ligada, **acrescenta** um caractere de espaço ao fim da lista -- mesmo o
+arquivo já tendo um espaço na primeira linha. O modelo escolhido foi
+treinado com essa opção ligada: o dicionário certo é as 185 linhas do
+arquivo **mais um espaço no fim**, dois espaços no total (índices
+diferentes, mesmo caractere). `1 (branco) + 185 + 1 (espaço extra) = 187`,
+batendo exato. Não tem como saber isso só lendo o arquivo do dicionário --
+só bate contando as classes da rede.
+
+### Validado com duas linhas reais de um documento da Frota Macedo
+
+Duas linhas recortadas à mão de `nota_whatsapp_crop.png` (o mesmo
+documento da fase 3), rodadas pelo pipeline completo
+(`recog.Preprocess` → grafo → `recog.DecodeCTC`) e comparadas com a mesma
+referência em Python (OpenCV + ONNX Runtime + a mesma regra de
+decodificação):
+
+| Linha | Saída da ERA READ | Confiança | Referência Python |
+|---|---|---|---|
+| `CPF/CNPJ:  27363223000170` | `"CPF/CNPJ: 27363223000170"` | 0,9434 | idêntico, 0,9434605 |
+| `Nº do Documento:  0000018355` | `"No do Documento:000018355"` | 0,8387 | idêntico, 0,8394767 |
+
+A primeira linha saiu perfeita. A segunda tem dois erros reais do modelo,
+não do código: perdeu o `º` (ordinal) e um dígito de `0000018355`
+(virou `000018355`) -- o crop dessa linha é menor e a fonte mais
+apertada, no mesmo tipo de limite de resolução que a fase 3 já tinha
+documentado para detecção. `recog` não tem como corrigir um erro de
+reconhecimento do modelo; só reporta o que ele decodificou.
+
+Comparando o TENSOR de entrada (não só o texto final) contra a mesma
+referência: diferença média ~0,0009, máxima ~0,006, numa faixa de
+valores em [-1,1] -- residual pequeno mas real, atribuível a
+`imgproc.Resize` (interpolação bilinear com centro de pixel) e
+`cv2.resize` do OpenCV não serem bit-a-bit idênticos, o mesmo tipo de
+diferença que a fase 3 já tinha isolado para o redimensionamento da
+detecção. Não impediu o texto de sair certo na linha 1 nem de errar nos
+mesmos dois lugares que a referência erraria com a mesma imagem de baixa
+resolução -- é ruído de implementação, não divergência de lógica.
+
+**O que a fase 5 ainda não faz:** decidir sozinha onde cortar uma linha
+dentro da página (isso é `detect` + `layout`, já prontos, mas ainda não
+ligados a `recog` num pipeline de ponta a ponta) e processar lote de mais
+de uma linha de uma vez (cada `Preprocess` produz sua própria largura;
+lotear linhas de larguras diferentes exige um preenchimento comum, que
+ainda não foi escrito porque nenhum caso de uso pediu velocidade de lote
+ainda). O que já funciona: pré-processar uma linha, rodar a rede, e
+decodificar em texto -- em documento real, não só em imagem de vitrine.
 
 ## Escolhas de modelo
 
@@ -575,10 +658,14 @@ encontradas corretamente numa foto de verdade (`ch_PP-OCRv4_det_infer`, ver
 da Frota Macedo: 102 regiões num PDF em alta resolução, 60 num print de
 tela de resolução mais baixa, com uma falha de detecção identificada e
 atribuída à resolução (ver "Testado em documento real" acima). A fase 5
-(reconhecimento) tem o grafo do `latin_PP-OCRv3_mobile_rec` montando,
-executando e batendo com o ONNX Runtime (similaridade de cosseno
-1,0000001) — faltam o pré-processamento de linha e a decodificação CTC (ver
-"SVTR: o grafo já roda" acima).
+(reconhecimento) tem o grafo do `latin_PP-OCRv3_mobile_rec` batendo com o
+ONNX Runtime (similaridade de cosseno 1,0000001) e o pacote `recog`
+(pré-processamento de linha + decodificação CTC) validado com duas linhas
+reais de um documento da Frota Macedo — uma saiu perfeita, a outra errou
+dois caracteres, no mesmo tipo de limite de resolução baixa já documentado
+na fase 3 (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais"
+acima). Falta ligar isso a um pipeline de ponta a ponta com `detect` e
+`layout`.
 
 ## Licença
 
