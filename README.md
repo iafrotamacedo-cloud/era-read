@@ -136,7 +136,7 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 |---|---|---|---|
 | 1 | `imgproc` | I/O, cinza, normalização de iluminação, amostragem bilinear | **pronto** |
 | 2 | `geom` | polígono, homografia (com `RemapHomography`, que já cobre a retificação de N1), ajuste de curva, remap | **pronto** |
-| 3 | `detect` | DBNet + contornos + expansão de polígono | parcial — pós-processamento (contornos + expansão) **pronto**; falta o pré-processamento da imagem e a integração fim a fim com um `.onnx` real |
+| 3 | `detect` | DBNet + contornos + expansão de polígono | parcial — pré-processamento e pós-processamento **prontos**, testados de ponta a ponta contra o `.onnx` real; falta testar com imagem real (só ruído até agora) |
 | 4 | `dewarp` | medidor de deformação (decide N0/N1/N2/N3 a partir dos polígonos), retificação por linha de N2 — e N3 depois | **pronto** (N3 fica para quando entrar rede) |
 | 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | — |
 | 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; colunas e tabela faltam |
@@ -181,13 +181,27 @@ bissetriz das duas arestas que se encontram nele (o "miter join" clássico
 de desenho de contorno) — conferido com um caso exato (um quadrado cresce
 exatamente a distância certa em cada lado, sem aproximação).
 
-Falta um adaptador (`ToLinePolygon`) entre o contorno bruto (um vértice por
-pixel de borda, formato genérico) e o poligono que `dewarp.ExtractBaseline`
-espera (metade dos vértices formando a borda de cima esquerda→direita, a
-outra metade a de baixo direita→esquerda) — esse já existe. O que falta de
-verdade na fase 3: o pré-processamento da imagem de entrada (redimensionar,
-normalizar) e testar a cadeia inteira com uma imagem real, não só com a
-fiação confirmada contra ruído aleatório (ver "O motor de inferência").
+`ToLinePolygon` faz a ponte entre o contorno bruto (um vértice por pixel de
+borda, formato genérico) e o polígono que `dewarp.ExtractBaseline` espera
+(metade dos vértices formando a borda de cima esquerda→direita, a outra
+metade a de baixo direita→esquerda).
+
+Do lado de entrada, `detect.Preprocess` redimensiona (lado maior no limite
+de 960px, os dois eixos arredondados para múltiplo de 32 — o backbone
+reduz e depois amplia por esse fator, e um tamanho que não feche exato
+acumula erro de forma a cada estágio) e normaliza. O detalhe que mais
+importava acertar: conferido no código-fonte do PaddleOCR, a imagem nunca
+é convertida de BGR para RGB — carrega direto via `cv2.imread` (BGR) e
+segue assim até a rede. Errar essa ordem não quebra nada visivelmente (a
+rede roda, produz saída de forma certa), só detecta pior — o tipo de erro
+que só uma imagem real revelaria, não um teste sintético.
+
+Com pré e pós-processamento prontos, a fase 3 está com todas as peças
+escritas e testadas de ponta a ponta contra o `.onnx` real — o que falta é
+**imagem real**: até aqui só ruído aleatório confirmou que a fiação inteira
+funciona sem erro de forma; se os valores saem certos só uma foto de
+verdade (e o pré-processamento comparado byte a byte contra a referência
+Python) vai provar.
 
 As fases 6 e 7 também foram adiantadas em parte, cada uma na fatia que não
 depende de reconhecimento nenhum:
@@ -353,12 +367,12 @@ go vet ./...
 ## Estado
 
 Fases 1, 2 e 4 prontas; fases 6 e 7 parciais (ver Roteiro). Fase 3
-(detecção) parcial: o motor de inferência está aqui dentro, independente,
-rodando o grafo do candidato (`ch_PP-OCRv4_det_infer`) de ponta a ponta; o
+(detecção) parcial: o motor de inferência está aqui dentro, independente;
+`detect/` tem pré-processamento (redimensiona, normaliza BGR) e
 pós-processamento (binariza, acha contorno, mede confiança, expande,
-adapta pro formato do `dewarp`) está pronto e testado (`detect/`). Falta o
-pré-processamento da imagem de entrada e o teste com imagem real, não só
-com ruído aleatório confirmando a fiação.
+adapta pro formato do `dewarp`) prontos e testados de ponta a ponta contra
+o `.onnx` real do candidato (`ch_PP-OCRv4_det_infer`). Falta testar com
+imagem real — até aqui só ruído aleatório confirmou que a fiação funciona.
 
 ## Licença
 

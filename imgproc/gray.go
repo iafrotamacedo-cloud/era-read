@@ -1,11 +1,12 @@
 // Package imgproc fornece o pre-processamento de imagem do ERA READ:
 // decodificar, converter para cinza, normalizar iluminacao e amostrar.
 //
-// Tudo aqui trabalha em escala de cinza, em float32, com valores em [0,1].
-// Cor nao ajuda a achar texto -- o contraste entre tinta e papel e uma
-// questao de luminancia, nao de matiz -- e float32 em [0,1] e o formato que
-// o resto da ERA ja usa (faces/tensor), entao a imagem chega pronta para
-// virar tensor quando a fase de deteccao existir.
+// A maior parte deste pacote trabalha em escala de cinza, em float32, com
+// valores em [0,1]. Cor nao ajuda os ALGORITMOS CLASSICOS daqui -- o
+// contraste entre tinta e papel e questao de luminancia, nao de matiz. A
+// excecao e FromImageChannel: a rede de deteccao foi treinada com imagem
+// colorida de verdade, entao alimentar ela exige os tres canais separados,
+// nao a luminancia combinada -- ver detect.Preprocess.
 //
 // Nada neste pacote conhece documento, papel ou texto. E processamento de
 // imagem generico; o significado entra em pacotes posteriores.
@@ -89,6 +90,46 @@ func FromImage(src image.Image) *Gray {
 			r, g, bl, _ := src.At(x, y).RGBA()
 			lum := pesoR*float64(r) + pesoG*float64(g) + pesoB*float64(bl)
 			dst.Set(x-b.Min.X, y-b.Min.Y, float32(lum*escala))
+		}
+	}
+	return dst
+}
+
+// Channel seleciona um canal de cor para extrair isoladamente, em
+// FromImageChannel.
+type Channel int
+
+const (
+	ChannelR Channel = iota
+	ChannelG
+	ChannelB
+)
+
+// FromImageChannel extrai um unico canal de cor de src como Gray, em [0,1]
+// -- sem misturar com os outros dois, ao contrario de FromImage.
+//
+// Existe para alimentar uma rede treinada em imagem colorida (o detector de
+// texto): achar texto pela via classica e questao de contraste, mas a rede
+// aprendeu com cor de verdade, e nao ha como reconstruir isso a partir so
+// da luminancia.
+func FromImageChannel(src image.Image, ch Channel) *Gray {
+	b := src.Bounds()
+	dst := NewGray(b.Dx(), b.Dy())
+
+	const escala = 1.0 / 65535.0
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r, g, bl, _ := src.At(x, y).RGBA()
+			var v uint32
+			switch ch {
+			case ChannelR:
+				v = r
+			case ChannelG:
+				v = g
+			case ChannelB:
+				v = bl
+			}
+			dst.Set(x-b.Min.X, y-b.Min.Y, float32(float64(v)*escala))
 		}
 	}
 	return dst

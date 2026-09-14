@@ -96,3 +96,29 @@ func abs32(v float32) float32 {
 	}
 	return v
 }
+
+// TestFromImageChannelNaoMistura confere que cada canal sai isolado -- um
+// pixel com R, G e B bem diferentes tem que devolver tres valores bem
+// diferentes, nao uma media (que e o que FromImage faz de proposito).
+func TestFromImageChannelNaoMistura(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	src.Set(0, 0, color.RGBA{R: 200, G: 50, B: 10, A: 255})
+
+	casos := []struct {
+		nome string
+		ch   Channel
+		want float32
+	}{
+		{"R", ChannelR, 200.0 / 255.0},
+		{"G", ChannelG, 50.0 / 255.0},
+		{"B", ChannelB, 10.0 / 255.0},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			g := FromImageChannel(src, c.ch)
+			if got := g.At(0, 0); abs32(got-c.want) > 0.01 {
+				t.Errorf("canal %s = %v, quero ~%v", c.nome, got, c.want)
+			}
+		})
+	}
+}
