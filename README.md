@@ -229,12 +229,47 @@ direto do usuário nesta mesma sessão -- `ConvTranspose2D` com duas
 implementações independentes (uma que reúne, outra que distribui,
 cross-checadas nos testes) e `HardSigmoid` na forma de `montaClip`. O
 `faces/graph` do `era` agora cobre 100% das ops do `ch_PP-OCRv4_det_infer`.
-**A única peça que falta para a fase 3 é a decisão de importação** (seção
-acima) -- não falta mais nenhuma op.
 
 A lição fica registrada: ler o código-fonte de duas peças do grafo (FPN e
 head) deu uma resposta incompleta porque não cobriu o backbone. Contra o
 `.onnx` real, o levantamento fechou certo.
+
+### O grafo monta e executa de ponta a ponta -- testado em 14/09/2026
+
+Rodar o `.onnx` real (via `replace` local para `era` num programa
+descartável, a mesma técnica usada para listar as ops) achou um segundo
+problema, que nenhuma leitura de código-fonte revelaria: o exportador
+`paddle2onnx` do PaddlePaddle grava **todos os pesos treinados como nós
+`Constant`**, não como `initializer` -- 0 initializers, 342 `Constant` no
+modelo real. `montaConstant` só registrava o valor como operação de
+execução, nunca como peso disponível na montagem; todo `Conv` logo depois
+de um `Constant` falhava. Corrigido no `era` (commit `ca47cee`, uma linha:
+`Constant` agora também alimenta `b.consts`).
+
+Depois da correção:
+
+```
+Grafo montado com sucesso -- todas as ops foram reconhecidas.
+Executando com entrada aleatoria [1,3,640,640]...
+Execucao OK em 1.6572467s. Saida "sigmoid_0.tmp_0", forma [1 1 640 640], 409600 elementos.
+Faixa [0,1] confere com a saida de um Sigmoid (mapa de probabilidade).
+```
+
+**O que isso prova:** o executor do `era` aguenta a arquitetura inteira do
+PP-OCRv4 -- 672 nós, 14 tipos de operação, sem erro de forma nem de op.
+**O que isso não prova:** que os valores saem certos. A entrada foi ruído
+aleatório, não uma imagem real com o pré-processamento que o modelo
+espera (normalização por média/desvio-padrão) -- por isso a saída ficou
+quase toda zero, o esperado para ruído, não um sinal de acerto ou erro.
+Validação numérica de verdade (contra ONNX Runtime, com imagem real,
+mesma normalização) é trabalho da fase 3 propriamente dita, não deste
+teste de fumaça.
+
+**Consequência prática para a decisão de importação:** já que o motor de
+inferência do `era` roda esta arquitetura específica sem faltar nada, a
+pergunta "importar como módulo ou copiar" deixou de ser especulativa --
+qualquer um dos dois caminhos funciona hoje. A escolha entre eles continua
+em aberto, mas por preferência de manutenção, não por incerteza técnica.
 
 ## Escolhas de modelo
 
