@@ -97,6 +97,84 @@ func TestGroupLinesSeparaSobreposicaoPequena(t *testing.T) {
 	}
 }
 
+// TestGroupLinesCadeiaDeSobreposicao cobre o bug real achado num item de
+// tabela: 3 regioes da MESMA linha impressa (o valor de uma coluna, a
+// descricao do produto no meio, a unidade de outra coluna), com faixas Y
+// que se sobrepoem em cadeia mas nao todas contra a PRIMEIRA por ordem de
+// Y -- os numeros sao os medidos de verdade em nota_real-1.png.
+//
+//	"Valor Total"   y=[447,477] altura=30  (a 1a por ordem de Y -- vira ancora)
+//	descricao       y=[461,494] altura=33  (sobrepoe a ancora em 53%)
+//	"UN"            y=[467,498] altura=31  (sobrepoe a ancora em so 33% --
+//	                                        mas sobrepoe a descricao em 87%)
+//
+// Sem estender a faixa da linha conforme a descricao entra, "UN" cai numa
+// linha separada -- exatamente o defeito que motivou a extensao com teto.
+func TestGroupLinesCadeiaDeSobreposicao(t *testing.T) {
+	entrada := []Word{
+		palavra("VValorTotal", 1400, 447, 1500, 477),
+		palavra("descricao", 0, 461, 400, 494),
+		palavra("UN", 666, 467, 700, 498),
+	}
+	linhas := GroupLines(entrada)
+	if len(linhas) != 1 {
+		t.Fatalf("GroupLines achou %d linhas, quero 1 (as 3 regioes sao a mesma linha impressa)", len(linhas))
+	}
+	if got := linhas[0].Text(); got != "descricao UN VValorTotal" {
+		t.Errorf("linha = %q, quero %q", got, "descricao UN VValorTotal")
+	}
+}
+
+// TestGroupLinesNaoDerivaSemLimite e o contrapeso do teste acima: uma
+// cadeia de palavras cada uma um pouco mais abaixo que a anterior, longa
+// o bastante para que a faixa cresceria sem parar se não houvesse teto --
+// e a preocupacao original que fez este pacote nascer sem extensao
+// nenhuma. Com MaxDriftFactor, a cadeia tem que parar de crescer e abrir
+// uma linha nova, nao engolir a pagina inteira numa linha so.
+func TestGroupLinesNaoDerivaSemLimite(t *testing.T) {
+	const altura = 10.0
+	const passo = 4.0 // sobreposicao de 6 em 10 = 60%, acima do limiar
+	var entrada []Word
+	for i := 0; i < 12; i++ {
+		y0 := float64(i) * passo
+		entrada = append(entrada, palavra("w", float64(i)*15, y0, float64(i)*15+10, y0+altura))
+	}
+
+	linhas := GroupLines(entrada)
+	// sem teto, a cadeia inteira (sobreposicao de 60% em cada passo) viraria
+	// UMA linha so, do topo ao fim -- 12 palavras, ~54px de faixa vertical.
+	// Com MaxDriftFactor, a faixa para de crescer depois de um tanto e uma
+	// palavra distante o bastante abre linha nova.
+	if len(linhas) < 2 {
+		t.Fatalf("GroupLines achou %d linha(s), quero mais de uma -- a cadeia nao pode derivar sem limite", len(linhas))
+	}
+	if len(linhas[0].Words) == len(entrada) {
+		t.Errorf("a primeira linha engoliu as %d palavras -- o teto de MaxDriftFactor nao freou a cadeia", len(entrada))
+	}
+}
+
+// TestGroupLinesNaoFundeLinhasEmpilhadas cobre o outro lado do bug real:
+// duas linhas de ITEM DIFERENTES, empilhadas de perto (pouco espaco entre
+// elas, comum numa tabela), tem sobreposicao vertical alta -- geometricamente
+// quase identica ao caso que motivou a extensao de MaxDriftFactor. A faixa
+// de X e o que distingue: a mesma linha impressa ocupa colunas diferentes
+// (nao se sobrepoe em X); duas linhas empilhadas repetem a coluna (o
+// codigo do proximo item comeca na mesma posicao X do anterior).
+func TestGroupLinesNaoFundeLinhasEmpilhadas(t *testing.T) {
+	entrada := []Word{
+		// item A: descricao (x=[0,300]) e quantidade (x=[400,450])
+		palavra("00000000007105 - PANO DE CHAO", 0, 597, 300, 639),
+		palavra("2,000", 400, 611, 450, 650),
+		// item B, logo abaixo, mesma coluna de descricao -- sobreposicao Y
+		// alta com o item A, mas MESMA faixa de X da descricao dele.
+		palavra("00000000000442 - SERRA STARRETT", 0, 611, 300, 660),
+	}
+	linhas := GroupLines(entrada)
+	if len(linhas) != 2 {
+		t.Fatalf("GroupLines achou %d linha(s), quero 2 (sao dois itens diferentes empilhados)", len(linhas))
+	}
+}
+
 func TestLineBounds(t *testing.T) {
 	l := Line{Words: []Word{
 		palavra("a", 0, 5, 10, 15),

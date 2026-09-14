@@ -39,6 +39,11 @@ func (w Word) xMin() float64 {
 	return lo.X
 }
 
+func (w Word) xRange() (min, max float64) {
+	lo, hi := w.Box.Bounds()
+	return lo.X, hi.X
+}
+
 // Line e uma sequencia de palavras da mesma linha de texto, em ordem de
 // leitura esquerda para direita.
 type Line struct {

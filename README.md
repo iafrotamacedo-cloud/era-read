@@ -140,7 +140,7 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 | 4 | `dewarp` | medidor de deformação (decide N0/N1/N2/N3 a partir dos polígonos), retificação por linha de N2 — e N3 depois | **pronto** (N3 fica para quando entrar rede) |
 | 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | **funcionando** — pré-processamento de linha, grafo e decodificação CTC validados com linha de texto real de documento da Frota Macedo (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais" abaixo) |
 | 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; campo dentro de uma linha por espaçamento (`SplitCells`) **pronto**, validado nos dois documentos reais; colunas entre várias linhas (`GroupTable`) **implementado e testado** para grade limpa, mas não segmenta os itens dos dois documentos reais (ver "`GroupTable`: colunas entre linhas" abaixo) |
-| — | `read` | liga `detect`+`dewarp`+`recog`+`layout` numa passagem só: página inteira → linhas de texto | **funcionando** — roda de ponta a ponta nos dois documentos reais da Frota Macedo já usados nas fases 3 e 5, com texto corretamente legível depois de três bugs de integração achados e corrigidos (ver "`read`: a página inteira" e "Terceiro bug" abaixo); resta um defeito conhecido (espaço perdido dentro de região detectada como uma peça só, a mesma causa que atrapalha `GroupTable`) |
+| — | `read` | liga `detect`+`dewarp`+`recog`+`layout` numa passagem só: página inteira → linhas de texto | **funcionando** — roda de ponta a ponta nos dois documentos reais da Frota Macedo já usados nas fases 3 e 5, com texto corretamente legível depois de quatro bugs de integração achados e corrigidos (ver "`read`: a página inteira", "Terceiro bug" e "Quarto bug" abaixo); resta um defeito conhecido, sem relação com os quatro (espaço perdido dentro de uma região que o detector marcou como uma peça só) |
 | 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; `read.ExtrairCampos` (achados livres) e `read.ExtrairDAV` (schema da DAV: emitente, destinatário, número, data, totais, itens) ligam isso à saída de `read.Page`, validados no PDF em alta resolução com emitente/destinatário/número/data/total todos corretos (ver "`ExtrairCampos` e `ExtrairDAV`" abaixo); falta tabela de itens estruturada e schema para outros tipos de documento |
 
 A fase 4 (`dewarp`) foi adiantada fora de ordem porque só depende de
@@ -786,6 +786,62 @@ ser N3. Ponto de partida, como o próprio `dewarp.DefaultThresholds` já se
 declarava -- agora com um caso real medido por trás do número, não só um
 palpite.
 
+## Quarto bug: um item físico virava várias `Line`s -- 14/09/2026
+
+Investigado a pedido explícito, como causa raiz de um sintoma já
+registrado (`GroupTable` fundindo colunas erradas nos itens da tabela):
+por que o código+descrição de um item e a grade de quantidade/preço ao
+lado saem em `Line`s diferentes, se visualmente é a mesma linha impressa
+-- **sem relação** com o defeito de "espaço perdido dentro de uma região"
+já documentado (aquele é uma região só que o reconhecedor não separou em
+palavras; este é mais de uma região que `layout` não juntou numa linha).
+
+Medido com as posições reais de um item (`nota_real-1.png`):
+
+```
+"...TIGRE/KR" (descrição)  x0=64    y=461..494  (altura 33)
+"UN"                       x0=666   y=467..498  (altura 31)
+"Valor Total"              x0=1426  y=447..477  (altura 30)
+```
+
+`GroupLines` ordena por Y e ancora cada `Line` na PRIMEIRA palavra, sem
+nunca atualizar a âncora -- por desenho, para não deixar uma linha
+"derivar" verticalmente e engolir a de baixo. Por ordem de Y, "Valor
+Total" (447) vira âncora. A descrição bate 53% de sobreposição contra
+essa âncora -- entra. Mas "UN" bate só 33% contra a âncora ORIGINAL
+"Valor Total" (embora bata 87% contra a descrição, que já tinha
+entrado) -- like a âncora nunca muda, "UN" fica de fora e abre uma
+`Line` nova. Um problema de transitividade: A sobrepõe B, B sobreporia
+C, mas A não sobrepõe C, e só A conta.
+
+Corrigido em duas partes, as duas testadas com os números reais acima:
+
+1. **A faixa de comparação passa a crescer** conforme cada palavra nova
+   entra (até um teto de `MaxDriftFactor`, 2× a altura da âncora original)
+   -- resolve a transitividade sem reabrir o risco original de derivar
+   sem limite (`TestGroupLinesNaoDerivaSemLimite` prova o teto segurando
+   uma cadeia longa).
+2. Só isso **causou um novo problema**, medido rodando contra o
+   documento real antes de declarar pronto: duas linhas de ITENS
+   DIFERENTES, empilhadas de perto (pouco espaço entre elas, comum numa
+   tabela), têm sobreposição vertical tão alta quanto o caso de cima --
+   geometricamente quase idêntico. `"PANO DE CHAO"` e `"SERRA STARRETT"`
+   (dois produtos diferentes) se fundiram numa `Line` só. O que distingue
+   os dois casos: palavras da MESMA linha impressa ocupam colunas
+   diferentes (faixas de X que não se sobrepõem); linhas empilhadas
+   repetem a coluna (o código do próximo item começa na mesma posição X
+   do anterior). Corrigido exigindo que a palavra candidata não dispute a
+   faixa de X de nenhuma palavra já aceita na linha
+   (`TestGroupLinesNaoFundeLinhasEmpilhadas`).
+
+Resultado nos dois documentos reais: itens que antes saíam partidos em 2-3
+`Line`s (código+descrição numa, quantidade/preço/desconto noutra) agora
+saem inteiros numa `Line` só -- `"00000000002588 - BORRACHA DE SILICONE
+INCO SES 2,000 19,90 0,00% 0,00 0,00 % 0,00 39,80"`, por exemplo, onde
+antes a parte numérica ficava numa `Line` separada. Ainda sobram alguns
+fragmentos residuais soltos (uma célula "0,00 15,90" que não juntou com o
+resto do seu item) -- melhora medida, não perfeição alcançada.
+
 ## `GroupTable`: colunas entre linhas -- 14/09/2026
 
 `SplitCells` corta uma linha em campos; `layout.GroupTable` tenta ir além,
@@ -799,27 +855,28 @@ deixa a célula que falta vazia, não deslocada; uma coluna cuja largura
 varia um pouco de linha para linha (texto mais longo numa, mais curto
 noutra) continua alinhada, desde que as faixas se sobreponham.
 
-Rodado nos itens da tabela dos dois documentos reais: **não segmentou em
-colunas** -- as 13 (e 3) linhas da área de itens caíram todas numa coluna
-só. Causa, medida, não hipótese: o algoritmo de fundir intervalos
-sobrepostos quebra quando UMA linha tem uma célula muito mais larga que
-as outras e essa célula sozinha cobre a faixa horizontal de duas colunas
-"de verdade" -- ela vira uma ponte que funde as duas em uma só. É
-exatamente o formato dos itens destes documentos: a linha do
-código+descrição do produto é bem mais larga que a faixa de quantidade
-sozinha, e como código+descrição e quantidade/preço acabam em **linhas
-diferentes** (o mesmo item físico vira 2 ou mais `Line`s, uma limitação
-de `GroupLines` ainda não resolvida -- ver "espaço perdido" acima, prima
-deste problema), a largura desencontrada entre elas funde tudo.
+Rodado nos itens da tabela dos dois documentos reais, depois do quarto
+bug corrigido (o item físico agora forma uma `Line` só na maioria dos
+casos): **continua não segmentando em colunas** -- mas por um motivo
+NOVO e diferente do que causava isso antes. Antes, uma célula
+desproporcionalmente larga (código+descrição) fundia duas colunas de
+`GroupTable` numa só. Agora que a `Line` do item tem muitas palavras
+(descrição, unidade, quantidade, preço, descontos, total, tudo numa linha
+só), `SplitCells` não acha nenhum vão isolado grande o bastante entre
+elas -- os vãos entre campos vizinhos (unidade→quantidade,
+quantidade→preço) são todos parecidos em tamanho, nenhum se destaca como
+fronteira de coluna -- e a linha inteira vira UMA célula só, sem
+fronteira nenhuma para `GroupTable` alinhar.
 
 **O que isso prova, e o que não prova:** o algoritmo de `GroupTable` está
 certo para o caso que ele promete -- grade limpa, testada e comprovada.
 Não prova que "colunas e tabela" (fase 6) está fechada para documento
-real: falta tratar célula desproporcionalmente larga como sinal para NÃO
-fundir, e isso só vale a pena calibrar depois que o item físico virar uma
-`Line` só (hoje seria consertar o sintoma, não a causa). Registrado como
-limitação medida, não escondida atrás de um teste sintético que não
-prova nada sobre o caso real.
+real: falta um critério de corte que reconheça fronteiras de coluna
+verdadeiras (posição fixa esperada por tipo de campo, não só "maior vão
+que os vizinhos") dentro de uma linha de item já correta. Duas causas
+diferentes já foram medidas e descartadas (célula larga demais; nenhum
+vão suficientemente grande) -- a próxima tentativa tem duas hipóteses a
+menos para testar.
 
 ## `ExtrairCampos` e `ExtrairDAV`: do texto lido ao dado tipado -- 14/09/2026
 
@@ -951,25 +1008,31 @@ dois caracteres, no mesmo tipo de limite de resolução baixa já documentado
 na fase 3 (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais"
 acima). O pacote `read` liga detecção, retificação, reconhecimento e
 layout numa passagem só e roda de ponta a ponta nos dois documentos reais
-da Frota Macedo -- 34 e 22 linhas de texto corretamente legível
-("DOCUMENTO AUXILIAR DE VENDA - PEDIDO", CNPJ, endereço, itens da tabela),
-depois de três bugs de integração achados e corrigidos no processo
+da Frota Macedo -- 30 e 22 linhas de texto corretamente legível
+("DOCUMENTO AUXILIAR DE VENDA - PEDIDO", CNPJ, endereço, itens da tabela,
+agora com código+descrição e quantidade/preço do mesmo item numa linha só),
+depois de quatro bugs de integração achados e corrigidos no processo
 (`dewarp.ExtractBaseline` classificava linha reta como N3; o recorte para
 reconhecimento usava pontos que cortavam o início/fim do texto; campo
 pequeno como um valor monetário curto também virava N3 por limiar de
-deformação em pixel absoluto, não relativo ao tamanho da região -- ver
-"`read`: a página inteira" e "Terceiro bug" acima). Resta um defeito
-conhecido: espaço perdido dentro de uma região que o detector marcou como
-uma peça só. `layout.SplitCells` separa campo por espaçamento horizontal
-dentro de uma linha, validado nos dois documentos reais; `layout.GroupTable`
-alinha células de várias linhas em coluna, testado e correto para grade
-limpa, mas não segmenta os itens dos documentos reais (a mesma causa do
-defeito de espaço acima). `read.ExtrairCampos` e `read.ExtrairDAV` ligam
-`extract` à saída de `read.Page` e fecham o ciclo completo pela primeira
-vez num documento real -- emitente, destinatário, número do documento,
-data e total todos corretos no PDF em alta resolução; falta tabela de
-itens estruturada e schema para outros tipos de documento (ver
-"`SplitCells`", "`GroupTable`" e "`ExtrairCampos` e `ExtrairDAV`" acima).
+deformação em pixel absoluto, não relativo ao tamanho da região;
+`layout.GroupLines` ancorava cada linha na primeira palavra sem nunca
+atualizar, quebrando por transitividade um item de tabela em várias
+`Line`s -- ver "`read`: a página inteira", "Terceiro bug" e "Quarto bug"
+acima). Resta um defeito conhecido, sem relação com os quatro: espaço
+perdido dentro de uma região que o detector marcou como uma peça só.
+`layout.SplitCells` separa campo por espaçamento horizontal dentro de uma
+linha, validado nos dois documentos reais; `layout.GroupTable` alinha
+células de várias linhas em coluna, testado e correto para grade limpa,
+mas ainda não segmenta os itens dos documentos reais -- agora porque
+nenhum vão dentro da linha (já corrigida pelo quarto bug) se destaca como
+fronteira de coluna, uma causa diferente da que atrapalhava antes.
+`read.ExtrairCampos` e `read.ExtrairDAV` ligam `extract` à saída de
+`read.Page` e fecham o ciclo completo pela primeira vez num documento
+real -- emitente, destinatário, número do documento, data e total todos
+corretos no PDF em alta resolução; falta tabela de itens estruturada e
+schema para outros tipos de documento (ver "`SplitCells`", "Quarto bug",
+"`GroupTable`" e "`ExtrairCampos` e `ExtrairDAV`" acima).
 
 ## Licença
 
