@@ -88,6 +88,52 @@ func TestGroupTableColunaDeslocada(t *testing.T) {
 	}
 }
 
+// TestGroupTableWordsAlinhaCampoDeItem cobre o caso real que motivou
+// GroupTableWords: uma linha de item de tabela ja corrigida pelo quarto
+// bug (codigo+descricao, unidade, quantidade, preco, tudo numa Line so),
+// onde os vaos entre campos vizinhos sao parecidos demais para SplitCells
+// achar uma fronteira -- GroupTable (via SplitCells) colapsaria tudo numa
+// celula so; GroupTableWords usa cada palavra ja detectada separadamente
+// como sua propria celula.
+func TestGroupTableWordsAlinhaCampoDeItem(t *testing.T) {
+	// duas linhas de item, mesmas colunas (descricao, unidade, quantidade,
+	// preco), vaos pequenos e parecidos entre campos vizinhos -- o que
+	// faria SplitCells juntar tudo numa celula so.
+	linhas := []Line{
+		linhaDeGrade(0, []string{"COD1 - PRODUTO A", "UN", "1,000", "10,00"}, []float64{0, 50, 100, 150}),
+		linhaDeGrade(30, []string{"COD2 - PRODUTO B", "UN", "2,000", "5,00"}, []float64{0, 50, 100, 150}),
+	}
+
+	// confere a premissa: SplitCells colapsa mesmo (vaos pequenos demais
+	// para o gapFactor padrao separar).
+	if len(linhas[0].SplitCells(DefaultGapFactor)) != 1 {
+		t.Fatal("premissa do teste furou: SplitCells nao deveria achar fronteira nenhuma aqui")
+	}
+
+	tbl := GroupTableWords(linhas)
+	if got := tbl.NumColumns(); got != 4 {
+		t.Fatalf("NumColumns = %d, quero 4 (uma por palavra)", got)
+	}
+	quero := [][]string{
+		{"COD1 - PRODUTO A", "UN", "1,000", "10,00"},
+		{"COD2 - PRODUTO B", "UN", "2,000", "5,00"},
+	}
+	for i, linha := range quero {
+		for j, texto := range linha {
+			if got := tbl.Rows[i][j].Text(); got != texto {
+				t.Errorf("Rows[%d][%d] = %q, quero %q", i, j, got, texto)
+			}
+		}
+	}
+}
+
+func TestGroupTableWordsSemLinhas(t *testing.T) {
+	tbl := GroupTableWords(nil)
+	if len(tbl.Rows) != 0 {
+		t.Errorf("Rows = %v, quero vazio", tbl.Rows)
+	}
+}
+
 func TestGroupTableSemLinhas(t *testing.T) {
 	tbl := GroupTable(nil, DefaultGapFactor)
 	if len(tbl.Rows) != 0 {

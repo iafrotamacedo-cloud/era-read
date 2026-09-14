@@ -123,7 +123,13 @@ func ExtrairDAV(linhas []layout.Line) DAV {
 			fim = len(linhas)
 		}
 		if inicioItens < fim {
-			d.Itens = layout.GroupTable(linhas[inicioItens:fim], layout.DefaultGapFactor)
+			// GroupTableWords, nao GroupTable: uma linha de item ja
+			// corrigida (ver README, "Quarto bug") tem muitos campos
+			// vizinhos a distancias parecidas -- SplitCells nao acha vao
+			// que se destaque como fronteira, e a linha inteira viraria
+			// uma celula so. Cada campo numerico ja e uma regiao detectada
+			// a parte, entao GroupTableWords alinha por palavra direto.
+			d.Itens = layout.GroupTableWords(linhas[inicioItens:fim])
 		}
 	}
 

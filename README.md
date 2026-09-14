@@ -139,9 +139,9 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 | 3 | `detect` | DBNet + contornos + expansão de polígono | **funcionando** — validado com imagem real contra o ONNX Runtime (99,999% de similaridade) e testado em dois documentos reais da Frota Macedo (102 e 60 regiões, ver "Testado em documento real" abaixo) |
 | 4 | `dewarp` | medidor de deformação (decide N0/N1/N2/N3 a partir dos polígonos), retificação por linha de N2 — e N3 depois | **pronto** (N3 fica para quando entrar rede) |
 | 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | **funcionando** — pré-processamento de linha, grafo e decodificação CTC validados com linha de texto real de documento da Frota Macedo (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais" abaixo) |
-| 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; campo dentro de uma linha por espaçamento (`SplitCells`) **pronto**, validado nos dois documentos reais; colunas entre várias linhas (`GroupTable`) **implementado e testado** para grade limpa, mas não segmenta os itens dos dois documentos reais (ver "`GroupTable`: colunas entre linhas" abaixo) |
+| 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | **funcionando** — linhas e ordem de leitura de 1 coluna prontas; campo dentro de uma linha por espaçamento (`SplitCells`) validado nos dois documentos reais; colunas entre várias linhas por célula (`GroupTable`) ou por palavra (`GroupTableWords`) **implementadas e testadas**, com a tabela de itens dos documentos reais saindo em colunas reconhecíveis (1→7 colunas no PDF em alta resolução, ver "`GroupTableWords`" abaixo) |
 | — | `read` | liga `detect`+`dewarp`+`recog`+`layout` numa passagem só: página inteira → linhas de texto | **funcionando** — roda de ponta a ponta nos dois documentos reais da Frota Macedo já usados nas fases 3 e 5, com texto corretamente legível depois de quatro bugs de integração achados e corrigidos (ver "`read`: a página inteira", "Terceiro bug" e "Quarto bug" abaixo); resta um defeito conhecido, sem relação com os quatro (espaço perdido dentro de uma região que o detector marcou como uma peça só) |
-| 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; `read.ExtrairCampos` (achados livres) e `read.ExtrairDAV` (schema da DAV: emitente, destinatário, número, data, totais, itens) ligam isso à saída de `read.Page`, validados no PDF em alta resolução com emitente/destinatário/número/data/total todos corretos (ver "`ExtrairCampos` e `ExtrairDAV`" abaixo); falta tabela de itens estruturada e schema para outros tipos de documento |
+| 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; `read.ExtrairCampos` (achados livres) e `read.ExtrairDAV` (schema da DAV: emitente, destinatário, número, data, totais, itens em coluna via `GroupTableWords`) ligam isso à saída de `read.Page`, validados no PDF em alta resolução com emitente/destinatário/número/data/total corretos e itens em 7 colunas reconhecíveis (ver "`ExtrairCampos` e `ExtrairDAV`" abaixo); falta schema para outros tipos de documento |
 
 A fase 4 (`dewarp`) foi adiantada fora de ordem porque só depende de
 `geom` — não de rede nem de decisão pendente. `geom.RemapCurve` amostra uma
@@ -868,15 +868,46 @@ quantidade→preço) são todos parecidos em tamanho, nenhum se destaca como
 fronteira de coluna -- e a linha inteira vira UMA célula só, sem
 fronteira nenhuma para `GroupTable` alinhar.
 
-**O que isso prova, e o que não prova:** o algoritmo de `GroupTable` está
-certo para o caso que ele promete -- grade limpa, testada e comprovada.
-Não prova que "colunas e tabela" (fase 6) está fechada para documento
-real: falta um critério de corte que reconheça fronteiras de coluna
-verdadeiras (posição fixa esperada por tipo de campo, não só "maior vão
-que os vizinhos") dentro de uma linha de item já correta. Duas causas
-diferentes já foram medidas e descartadas (célula larga demais; nenhum
-vão suficientemente grande) -- a próxima tentativa tem duas hipóteses a
-menos para testar.
+### `GroupTableWords`: alinhar por palavra, não por célula
+
+A saída de `SplitCells` não é a única forma de decidir "célula" -- cada
+campo de uma linha de item (a unidade, a quantidade, o preço) já chegou
+como uma REGIÃO DETECTADA separada, com posição própria, muito antes de
+`SplitCells` entrar em cena. `layout.GroupTableWords` pula `SplitCells`
+de vez e trata cada `Word` da linha como sua própria célula, alinhando
+por posição X do mesmo jeito que `GroupTable` -- só muda o que conta como
+"célula" de entrada.
+
+Rodado nos itens dos dois documentos reais (com o mesmo `GroupTable` só
+trocado por `GroupTableWords` em `read.ExtrairDAV`): a tabela de itens do
+PDF em alta resolução passou de **1 coluna** para **7**, com descrição,
+unidade, quantidade e valores razoavelmente alinhados entre os itens:
+
+```
+item 0: [00000000001210 - CAP ESG PVC 40MM TIGRE/KR | UN | 1,000 | 3,50 | 0,00 |     | Valor Total]
+item 4: [00000000007105 - PANO DE CHAO COLORIDO      | UN | 2,000 | 4,00 | 0,00 | 0,00 % | 0,00]
+item 6: [00000000000174 - MASSA CORRIDA BRANCO 1,5K  | UN | 1,000 | 0,00 % | 0,00 | 0,00 % | 13,90]
+```
+
+Não é perfeito: algumas linhas têm célula vazia onde uma vizinha tem
+valor (a coluna "preço unitário" de `item 2`, por exemplo, ficou sem
+nada, porque aquela palavra específica não caiu na mesma faixa de X das
+outras linhas) -- o alinhamento depende de a posição X de cada campo
+repetir de linha para linha com fidelidade suficiente, e ruído de
+detecção quebra isso ocasionalmente. Ainda assim, é a primeira vez que a
+tabela de itens sai com estrutura de coluna reconhecível, não um texto
+corrido só.
+
+**O que isso prova, e o que não prova:** para as linhas de item já
+corrigidas pelo quarto bug, `GroupTableWords` consegue reconstituir
+colunas de verdade na maioria dos casos, medido nos dois documentos
+reais -- fechando, na prática, boa parte do que faltava na fase 6. Não
+prova alinhamento perfeito nem uma API definitiva (`GroupTable` via
+`SplitCells` continua certa para texto corrido com dois campos lado a
+lado, tipo rótulo+valor; `GroupTableWords` é para quando o bloco de
+linhas já se sabe ser tabela) -- células vazias onde deveria ter valor
+mostram que o alinhamento por posição ainda erra quando a detecção em si
+não é perfeitamente consistente entre linhas.
 
 ## `ExtrairCampos` e `ExtrairDAV`: do texto lido ao dado tipado -- 14/09/2026
 
@@ -1023,16 +1054,18 @@ acima). Resta um defeito conhecido, sem relação com os quatro: espaço
 perdido dentro de uma região que o detector marcou como uma peça só.
 `layout.SplitCells` separa campo por espaçamento horizontal dentro de uma
 linha, validado nos dois documentos reais; `layout.GroupTable` alinha
-células de várias linhas em coluna, testado e correto para grade limpa,
-mas ainda não segmenta os itens dos documentos reais -- agora porque
-nenhum vão dentro da linha (já corrigida pelo quarto bug) se destaca como
-fronteira de coluna, uma causa diferente da que atrapalhava antes.
-`read.ExtrairCampos` e `read.ExtrairDAV` ligam `extract` à saída de
-`read.Page` e fecham o ciclo completo pela primeira vez num documento
-real -- emitente, destinatário, número do documento, data e total todos
-corretos no PDF em alta resolução; falta tabela de itens estruturada e
-schema para outros tipos de documento (ver "`SplitCells`", "Quarto bug",
-"`GroupTable`" e "`ExtrairCampos` e `ExtrairDAV`" acima).
+células de várias linhas em coluna (certo para texto corrido, como
+rótulo+valor lado a lado), e `layout.GroupTableWords` faz o mesmo por
+palavra em vez de célula -- a tabela de itens do PDF em alta resolução
+passou de 1 para 7 colunas reconhecíveis, com alguma célula vazia
+ocasional onde a posição de um campo não repetiu entre linhas. `read.
+ExtrairCampos` e `read.ExtrairDAV` ligam `extract` à saída de `read.Page`
+e fecham o ciclo completo pela primeira vez num documento real --
+emitente, destinatário, número do documento, data, total e a tabela de
+itens em coluna, todos corretos ou reconhecíveis no PDF em alta
+resolução; falta schema para outros tipos de documento além da DAV (ver
+"`SplitCells`", "Quarto bug", "`GroupTable`"/"`GroupTableWords`" e
+"`ExtrairCampos` e `ExtrairDAV`" acima).
 
 ## Licença
 
