@@ -136,7 +136,7 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 |---|---|---|---|
 | 1 | `imgproc` | I/O, cinza, normalização de iluminação, amostragem bilinear | **pronto** |
 | 2 | `geom` | polígono, homografia (com `RemapHomography`, que já cobre a retificação de N1), ajuste de curva, remap | **pronto** |
-| 3 | `detect` | DBNet + contornos + expansão de polígono | **funcionando** — validado com imagem real contra o ONNX Runtime (99,999% de similaridade), 33 regiões de texto detectadas corretamente numa foto de verdade |
+| 3 | `detect` | DBNet + contornos + expansão de polígono | **funcionando** — validado com imagem real contra o ONNX Runtime (99,999% de similaridade) e testado em dois documentos reais da Frota Macedo (102 e 60 regiões, ver "Testado em documento real" abaixo) |
 | 4 | `dewarp` | medidor de deformação (decide N0/N1/N2/N3 a partir dos polígonos), retificação por linha de N2 — e N3 depois | **pronto** (N3 fica para quando entrar rede) |
 | 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | — |
 | 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; colunas e tabela faltam |
@@ -357,6 +357,47 @@ a maioria com confiança acima de 0,98, caindo visivelmente em cima do texto
 de verdade -- cabeçalho bilíngue, campos, código de barras, até texto em
 cima de uma mancha na foto.
 
+### Testado em documento real da Frota Macedo -- 14/09/2026
+
+Depois da validação numérica contra o ONNX Runtime (acima, com a imagem de
+vitrine do PaddleOCR), o passo seguinte foi um documento de verdade da
+empresa: uma "Documento Auxiliar de Venda - Pedido" (DAV).
+
+**Teste 1 -- PDF em alta resolução.** Render de `CCF08092026.pdf` via
+`pdftoppm -r 200` (1606×2286 px). Rodando o detector completo: **102
+regiões de texto encontradas**, cobrindo corretamente cabeçalho, campos,
+tabela de itens e totais -- inclusive **excluindo** de forma correta uma
+anotação escrita à mão que aparecia sobre o documento (fora de escopo desta
+fase, e o detector não confundiu uma coisa com a outra).
+
+**Teste 2 -- print de tela, resolução mais baixa.** O usuário enviou uma
+captura de tela de um visualizador (`Relatório SysPDV`) mostrando um
+documento parecido, com a moldura do sistema (barra de título, barra de
+ferramentas, barra de tarefas do Windows) em volta. Por instrução explícita
+do usuário, a página do documento foi recortada da moldura antes do teste
+(`nota_whatsapp_crop.png`, 765×803 -- localizado por transição de
+brilho nas bordas da página branca, sem retocar o conteúdo). Rodando o
+mesmo detector nessa imagem: **60 regiões de texto encontradas**, a maioria
+com confiança acima de 0,97.
+
+Uma auditoria visual do resultado achou uma falha real: a descrição de um
+item de tabela ("SERVICO DE ENTREGA") ficou sem caixa, enquanto os valores
+da mesma linha (unidade, quantidade, preço) foram detectados normalmente --
+confirmado ampliando a região em 2× (`zoom_item2.png`). A explicação mais
+provável, e a única com evidência a favor, é resolução: o print tem
+765×803 contra 1606×2286 do PDF, pouco mais da metade em cada eixo, o que
+deixa o traço de uma descrição em fonte pequena mais perto do limiar de
+binarização do `detect.Binarize`. Não é erro de pipeline -- o
+pré-processamento já está validado byte a byte contra a referência Python
+(seção acima) -- é uma limitação real de imagem de entrada pobre, registrada
+em vez de escondida.
+
+**O que isso prova, e o que não prova:** o pipeline de detecção funciona em
+documento real da empresa, não só na imagem de vitrine, e em duas condições
+de captura diferentes (PDF gerado por software vs. foto de tela). Não prova
+nada sobre reconhecimento de texto (fase 5, ainda não implementada) -- o que
+sai daqui são só posições de texto, não o texto em si.
+
 ## Escolhas de modelo
 
 **Detecção: DBNet, via PP-OCRv4 do PaddleOCR.** Pesquisado em 14/09/2026.
@@ -404,7 +445,10 @@ Fases 1, 2, 3 e 4 prontas; fases 6 e 7 parciais (ver Roteiro). A fase 3
 (detecção) está validada contra imagem real e o ONNX Runtime — 99,999% de
 similaridade de cosseno, 33 regiões de texto encontradas corretamente numa
 foto de verdade (`ch_PP-OCRv4_det_infer`, ver "Validado contra o ONNX
-Runtime" acima).
+Runtime" acima) — e testada em dois documentos reais da Frota Macedo: 102
+regiões num PDF em alta resolução, 60 num print de tela de resolução mais
+baixa, com uma falha de detecção identificada e atribuída à resolução (ver
+"Testado em documento real" acima).
 
 ## Licença
 
