@@ -207,11 +207,28 @@ que motivou o monorepo em primeiro lugar.
 construídas até agora (1, 2, 4 e as fatias de 6 e 7) toca em rede. A decisão
 só precisa ser tomada quando a fase 3 começar.
 
-O que a fase 3 vai precisar, já levantado: um `.onnx` do detector DBNet
-(candidato: `PP-OCRv4` do PaddleOCR, Apache License 2.0 confirmada na fonte)
-e a op `ConvTranspose` no executor de grafo — as duas camadas finais de
-upsample aprendido do `DBHead` são a única parte da arquitetura que o grafo
-atual do `era` não cobre ainda.
+O que a fase 3 vai precisar: um `.onnx` do detector DBNet (candidato:
+`PP-OCRv4` do PaddleOCR, Apache License 2.0 confirmada na fonte) e duas ops
+novas no executor de grafo do `era`. Isto não é mais suposição por leitura de
+código-fonte -- é o resultado de baixar o `ch_PP-OCRv4_det_infer.onnx` de
+verdade (espelho `SWHL/RapidOCR` no Hugging Face, sha256
+`d2a7720d...42f49da9`, conferido) e listar as ops com o proprio parser do
+`era/faces/onnx`, em 14/09/2026:
+
+| Op | Ocorrências no grafo | Para quê |
+|---|---|---|
+| `ConvTranspose` | 2 | as duas camadas finais de upsample aprendido do `DBHead` |
+| `HardSigmoid` | 10 | ativação do backbone (estilo MobileNetV3/PP-LCNet) -- não aparecia em `db_fpn.py`/`det_db_head.py` porque vem do módulo do backbone, que não tinha sido lido |
+
+O resto do grafo (672 nós, 14 tipos de operação) já está coberto: `Conv`,
+`BatchNormalization`, `Add`, `Mul`, `Div`, `Clip`, `Concat`, `Constant`,
+`GlobalAveragePool`, `Relu`, `Resize`, `Sigmoid` são todos suportados hoje.
+`HardSigmoid` é barato de implementar (`clip(alpha*x + beta, 0, 1)`, sem
+estado, sem peso) -- é `ConvTranspose` que carrega a complexidade real.
+
+A lição fica registrada: ler o código-fonte de duas peças do grafo (FPN e
+head) deu uma resposta incompleta porque não cobriu o backbone. Contra o
+`.onnx` real, o levantamento fecha.
 
 ## Escolhas de modelo
 
@@ -258,7 +275,9 @@ go vet ./...
 
 Fases 1, 2 e 4 prontas; fases 6 e 7 parciais (ver Roteiro). Fase 3
 (detecção) ainda não começou — falta escolher como importar o motor de
-inferência do `era` (ver seção acima) e implementar `ConvTranspose` nele.
+inferência do `era` (ver seção acima) e implementar `ConvTranspose` e
+`HardSigmoid` nele. O `.onnx` do candidato (`ch_PP-OCRv4_det_infer`) já foi
+baixado e conferido; ver "O motor de inferência" acima.
 
 ## Licença
 
