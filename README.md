@@ -1069,7 +1069,13 @@ resolução; falta schema para outros tipos de documento além da DAV (ver
 
 ## Licença
 
-A definir antes da primeira release — MIT ou Apache 2.0.
+MIT -- ver [LICENSE](LICENSE). Decidido em 14/09/2026; nem o monorepo `era`
+(de onde este motor saiu) tinha decidido isso ainda, então não havia
+precedente a seguir.
 
 Os **pesos de modelo** têm licença própria, independente deste código, e não
-são distribuídos aqui. Confira a licença do modelo que for usar.
+são distribuídos aqui. Confira a licença do modelo que for usar -- em
+particular, a divergência entre o checkpoint oficial do
+`latin_PP-OCRv3_mobile_rec` (Apache 2.0) e o espelho `.onnx` usado aqui
+(MIT), registrada na seção "SVTR: o grafo já roda" acima, continua sem
+resolver.
