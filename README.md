@@ -215,20 +215,26 @@ verdade (espelho `SWHL/RapidOCR` no Hugging Face, sha256
 `d2a7720d...42f49da9`, conferido) e listar as ops com o proprio parser do
 `era/faces/onnx`, em 14/09/2026:
 
-| Op | Ocorrências no grafo | Para quê |
-|---|---|---|
-| `ConvTranspose` | 2 | as duas camadas finais de upsample aprendido do `DBHead` |
-| `HardSigmoid` | 10 | ativação do backbone (estilo MobileNetV3/PP-LCNet) -- não aparecia em `db_fpn.py`/`det_db_head.py` porque vem do módulo do backbone, que não tinha sido lido |
+| Op | Ocorrências no grafo | Para quê | Estado |
+|---|---|---|---|
+| `ConvTranspose` | 2 | as duas camadas finais de upsample aprendido do `DBHead` | **implementado** (era, commit `7433493`) |
+| `HardSigmoid` | 10 | ativação do backbone (estilo MobileNetV3/PP-LCNet) -- não aparecia em `db_fpn.py`/`det_db_head.py` porque vem do módulo do backbone, que não tinha sido lido | **implementado** (era, commit `7433493`) |
 
-O resto do grafo (672 nós, 14 tipos de operação) já está coberto: `Conv`,
+O resto do grafo (672 nós, 14 tipos de operação) já estava coberto: `Conv`,
 `BatchNormalization`, `Add`, `Mul`, `Div`, `Clip`, `Concat`, `Constant`,
-`GlobalAveragePool`, `Relu`, `Resize`, `Sigmoid` são todos suportados hoje.
-`HardSigmoid` é barato de implementar (`clip(alpha*x + beta, 0, 1)`, sem
-estado, sem peso) -- é `ConvTranspose` que carrega a complexidade real.
+`GlobalAveragePool`, `Relu`, `Resize`, `Sigmoid` já eram suportados.
+
+**As duas ops que faltavam foram implementadas em 14/09/2026**, a pedido
+direto do usuário nesta mesma sessão -- `ConvTranspose2D` com duas
+implementações independentes (uma que reúne, outra que distribui,
+cross-checadas nos testes) e `HardSigmoid` na forma de `montaClip`. O
+`faces/graph` do `era` agora cobre 100% das ops do `ch_PP-OCRv4_det_infer`.
+**A única peça que falta para a fase 3 é a decisão de importação** (seção
+acima) -- não falta mais nenhuma op.
 
 A lição fica registrada: ler o código-fonte de duas peças do grafo (FPN e
 head) deu uma resposta incompleta porque não cobriu o backbone. Contra o
-`.onnx` real, o levantamento fecha.
+`.onnx` real, o levantamento fechou certo.
 
 ## Escolhas de modelo
 
@@ -274,10 +280,11 @@ go vet ./...
 ## Estado
 
 Fases 1, 2 e 4 prontas; fases 6 e 7 parciais (ver Roteiro). Fase 3
-(detecção) ainda não começou — falta escolher como importar o motor de
-inferência do `era` (ver seção acima) e implementar `ConvTranspose` e
-`HardSigmoid` nele. O `.onnx` do candidato (`ch_PP-OCRv4_det_infer`) já foi
-baixado e conferido; ver "O motor de inferência" acima.
+(detecção) ainda não começou, mas as duas ops que faltavam
+(`ConvTranspose`, `HardSigmoid`) já foram implementadas no `faces/graph`
+do `era` — falta só escolher como importar esse motor através de
+repositório (ver "O motor de inferência" acima). O `.onnx` do candidato
+(`ch_PP-OCRv4_det_infer`) já foi baixado e conferido.
 
 ## Licença
 
