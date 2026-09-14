@@ -9,7 +9,7 @@ import (
 // arquivo: redimensionar para o proprio tamanho tem de devolver a mesma
 // imagem, pixel a pixel. Se o alinhamento de grade em Resize estiver
 // errado (por exemplo, mapear cantos em vez de centros de pixel), este
-// teste falha mesmo que "pareça razoavel" visualmente.
+// teste falha mesmo que "pareca razoavel" visualmente.
 func TestResizeMesmoTamanhoEIdentidade(t *testing.T) {
 	rnd := rand.New(rand.NewSource(2))
 	g := NewGray(7, 5)

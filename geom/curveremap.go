@@ -21,7 +21,7 @@ func derivPoly(coeffs []float64) []float64 {
 }
 
 // arcLenTable e uma tabela de comprimento de arco acumulado ao longo de uma
-// curva, amostrada em x igualmente espaçado e integrada pela regra do
+// curva, amostrada em x igualmente espacado e integrada pela regra do
 // trapezio. Serve para inverter "comprimento de arco -> x", que nao tem
 // formula fechada para um polinomio generico.
 type arcLenTable struct {
@@ -85,7 +85,7 @@ const amostrasArco = 512
 // baseline. xMin/xMax delimitam o trecho a retificar -- tipicamente o
 // intervalo em x da propria linha detectada.
 //
-// A saida tem outW colunas amostradas em espaçamento igual de COMPRIMENTO
+// A saida tem outW colunas amostradas em espacamento igual de COMPRIMENTO
 // DE ARCO ao longo da curva, nao de x -- do contrario um trecho mais
 // inclinado da curva sairia com o texto comprimido em relacao a um trecho
 // mais plano, ja que percorre mais distancia real por unidade de x. Cada

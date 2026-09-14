@@ -37,7 +37,7 @@ func TestRemapHomographyEndireitaRetangulo(t *testing.T) {
 	original := imgproc.NewGray(w, h)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
-			// padrao xadrez: fácil de notar se o remap sair deslocado.
+			// padrao xadrez: facil de notar se o remap sair deslocado.
 			if (x/5+y/5)%2 == 0 {
 				original.Set(x, y, 1)
 			}

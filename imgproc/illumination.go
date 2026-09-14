@@ -73,7 +73,7 @@ func clampInt(v, lo, hi int) int {
 //
 // Papel curvo ou fotografado com luz lateral tem iluminacao que varia
 // suavemente ao longo da pagina -- exatamente a frequencia espacial que um
-// blur de raio grande captura e o texto (frequencia alta, traços finos) nao.
+// blur de raio grande captura e o texto (frequencia alta, tracos finos) nao.
 // Estimar o fundo com BoxBlur e dividir por ele remove o gradiente e deixa
 // so o que muda rapido: a tinta.
 //

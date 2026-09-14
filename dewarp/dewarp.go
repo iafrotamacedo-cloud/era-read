@@ -1,7 +1,7 @@
 // Package dewarp mede o quanto uma pagina fotografada esta deformada e
 // decide qual dos quatro niveis de retificacao ela precisa.
 //
-// A ideia central esta em documents/README.md: detectar antes de retificar.
+// A ideia central esta em README.md: detectar antes de retificar.
 // Um detector de texto devolve poligonos, e a forma desses poligonos ja e a
 // medida da deformacao -- um quadrilatero de 4 vertices diz "esta linha e
 // reta"; um poligono com mais vertices, tracando separadamente a borda de

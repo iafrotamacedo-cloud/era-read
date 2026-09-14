@@ -5,33 +5,33 @@ import (
 	"sort"
 )
 
-// OverlapFraction é o limiar mínimo de sobreposição vertical -- como
-// fração da altura da menor das duas caixas -- para duas palavras
+// OverlapFraction e o limiar minimo de sobreposicao vertical -- como
+// fracao da altura da menor das duas caixas -- para duas palavras
 // contarem como da mesma linha.
 const OverlapFraction = 0.5
 
-// GroupLines agrupa palavras soltas em linhas de texto usando só a
-// geometria (sobreposição vertical das caixas), nunca o conteúdo. Depois
+// GroupLines agrupa palavras soltas em linhas de texto usando so a
+// geometria (sobreposicao vertical das caixas), nunca o conteudo. Depois
 // ordena as palavras de cada linha da esquerda para a direita, e as
-// próprias linhas de cima para baixo -- a ordem de leitura de um bloco de
-// texto de uma coluna só.
+// proprias linhas de cima para baixo -- a ordem de leitura de um bloco de
+// texto de uma coluna so.
 //
 // Cada linha "abre" ancorada na faixa vertical [yMin,yMax] da primeira
-// palavra atribuída a ela, e essa âncora não muda depois -- ao contrário
+// palavra atribuida a ela, e essa ancora nao muda depois -- ao contrario
 // de ir estendendo a faixa a cada palavra nova (o que deixaria a linha
 // "derivar" verticalmente e engolir a linha vizinha de baixo aos poucos).
-// Isso assume que as palavras de uma mesma linha têm altura razoavelmente
-// uniforme; um título bem maior que o resto do parágrafo ao lado pode
-// abrir a própria linha mesmo estando geometricamente colado.
+// Isso assume que as palavras de uma mesma linha tem altura razoavelmente
+// uniforme; um titulo bem maior que o resto do paragrafo ao lado pode
+// abrir a propria linha mesmo estando geometricamente colado.
 //
-// SÓ cobre layout de uma coluna: duas palavras na mesma faixa vertical
-// caem na mesma linha mesmo que pertençam, na página de verdade, a colunas
-// diferentes lado a lado (um cabeçalho "Item" e "Valor" de duas colunas
+// SO cobre layout de uma coluna: duas palavras na mesma faixa vertical
+// caem na mesma linha mesmo que pertencam, na pagina de verdade, a colunas
+// diferentes lado a lado (um cabecalho "Item" e "Valor" de duas colunas
 // distintas, por exemplo). Separar coluna de linha por geometria pura
-// exige também olhar o espaçamento horizontal entre blocos de texto -- e
-// esse limiar só dá para calibrar direito contra documento real, que este
-// motor ainda não tem (a fase 3, detecção, não existe). Fica de fora agora
-// em vez de arriscar um número chutado; ver documents/README.md.
+// exige tambem olhar o espacamento horizontal entre blocos de texto -- e
+// esse limiar so da para calibrar direito contra documento real, que este
+// motor ainda nao tem (a fase 3, deteccao, nao existe). Fica de fora agora
+// em vez de arriscar um numero chutado; ver README.md.
 func GroupLines(words []Word) []Line {
 	if len(words) == 0 {
 		return nil
@@ -90,8 +90,8 @@ func GroupLines(words []Word) []Line {
 	return linhas
 }
 
-// overlap devolve o comprimento da interseção entre [aMin,aMax] e
-// [bMin,bMax], ou 0 se não se tocarem.
+// overlap devolve o comprimento da intersecao entre [aMin,aMax] e
+// [bMin,bMax], ou 0 se nao se tocarem.
 func overlap(aMin, aMax, bMin, bMax float64) float64 {
 	lo := math.Max(aMin, bMin)
 	hi := math.Min(aMax, bMax)
