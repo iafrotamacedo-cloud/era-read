@@ -70,6 +70,33 @@ func montaHardSigmoid(b *builder, n *onnx.Node) (*operation, error) {
 	}), nil
 }
 
+// montaHardSwish e x vezes a sua propria HardSigmoid -- aproximacao barata
+// da ativacao swish/SiLU, comum no mesmo tipo de backbone eficiente que usa
+// HardSigmoid (MobileNetV3/PP-LCNet). Ao contrario de HardSigmoid, o ONNX
+// nao deixa alpha/beta configuraveis aqui: sao fixos em 1/6 e 1/2.
+func montaHardSwish(b *builder, n *onnx.Node) (*operation, error) {
+	const alpha = float32(1.0 / 6.0)
+	const beta = float32(0.5)
+	return mapaUnario(n, func(v float32) float32 {
+		y := alpha*v + beta
+		if y < 0 {
+			y = 0
+		} else if y > 1 {
+			y = 1
+		}
+		return v * y
+	}), nil
+}
+
+// montaSqrt e a raiz quadrada elemento a elemento. Aparece na decomposicao
+// manual de normalizacao (variancia -> +eps -> Sqrt -> Div), quando o
+// exportador nao emite o operador LayerNormalization direto.
+func montaSqrt(b *builder, n *onnx.Node) (*operation, error) {
+	return mapaUnario(n, func(v float32) float32 {
+		return float32(math.Sqrt(float64(v)))
+	}), nil
+}
+
 // montaClip corta os valores num intervalo. E como ReLU6 e outras ativacoes
 // limitadas aparecem no ONNX.
 //
@@ -194,6 +221,8 @@ func montaBinario(tipo string) montador {
 		f = func(a, b float32) float32 { return a * b }
 	case "Div":
 		f = func(a, b float32) float32 { return a / b }
+	case "Pow":
+		f = func(a, b float32) float32 { return float32(math.Pow(float64(a), float64(b))) }
 	}
 
 	return func(b *builder, n *onnx.Node) (*operation, error) {

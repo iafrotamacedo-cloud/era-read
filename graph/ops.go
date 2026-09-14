@@ -45,13 +45,19 @@ func init() {
 		"Tanh":        montaTanh,
 		"Clip":        montaClip,
 		"HardSigmoid": montaHardSigmoid,
+		"HardSwish":   montaHardSwish,
 		"Softmax":     montaSoftmax,
 
 		// Aritmetica
-		"Add": montaBinario("Add"),
-		"Sub": montaBinario("Sub"),
-		"Mul": montaBinario("Mul"),
-		"Div": montaBinario("Div"),
+		"Add":  montaBinario("Add"),
+		"Sub":  montaBinario("Sub"),
+		"Mul":  montaBinario("Mul"),
+		"Div":  montaBinario("Div"),
+		"Pow":  montaBinario("Pow"),
+		"Sqrt": montaSqrt,
+
+		// Reducao
+		"ReduceMean": montaReduceMean,
 
 		// Forma
 		"Flatten":   montaFlatten,
@@ -60,6 +66,8 @@ func init() {
 		"Concat":    montaConcat,
 		"Unsqueeze": montaUnsqueeze,
 		"Squeeze":   montaSqueeze,
+		"Shape":     montaShape,
+		"Slice":     montaSlice,
 
 		// Sem efeito na inferencia
 		"Identity": montaIdentity,
@@ -470,22 +478,35 @@ func montaGemm(b *builder, n *onnx.Node) (*operation, error) {
 	}), nil
 }
 
-// montaMatMul trata a multiplicacao de matrizes com o segundo operando
-// constante -- que e como uma camada densa sem vies costuma aparecer.
+// montaMatMul trata a multiplicacao de matrizes.
+//
+// Dois casos bem diferentes usam o mesmo operador ONNX. Quando o segundo
+// operando e peso constante 2D -- uma camada densa sem vies, o caso comum --
+// vira nn.Linear: o peso e transposto uma vez na montagem, nao a cada
+// execucao. Quando nao e (os dois operandos so existem em execucao, como em
+// Q @ K^T de uma camada de atencao), cai no caminho generico de
+// matmulGenerico, que trata lote e transmissao de forma.
 func montaMatMul(b *builder, n *onnx.Node) (*operation, error) {
 	if len(n.Inputs) != 2 {
 		return nil, fmt.Errorf("MatMul espera 2 entradas, recebeu %d", len(n.Inputs))
 	}
 
-	w, err := b.pesoOpcional(n, 1, "segundo operando")
-	if err != nil {
-		return nil, err
+	// Nao usa b.pesoOpcional aqui: ela devolve ERRO (nao nil) quando a
+	// entrada existe mas nao e constante -- certo para um peso de verdade
+	// obrigatorio, errado aqui, onde "nao e constante" e so o sinal de que
+	// e o caso generico, nao uma falha.
+	var w *tensor.Tensor
+	if len(n.Inputs) > 1 && n.Inputs[1] != "" {
+		w = b.consts[n.Inputs[1]]
 	}
-	if w == nil {
-		return nil, fmt.Errorf("MatMul com os dois operandos dinamicos ainda nao e suportado")
-	}
-	if w.Rank() != 2 {
-		return nil, fmt.Errorf("o segundo operando tem forma %v, quero 2 dimensoes", w.Shape)
+	if w == nil || w.Rank() != 2 {
+		return novaOp(n, func(ws *nn.Workspace, ins []*tensor.Tensor) ([]*tensor.Tensor, error) {
+			out, err := matmulGenerico(ws, ins[0], ins[1])
+			if err != nil {
+				return nil, err
+			}
+			return []*tensor.Tensor{out}, nil
+		}), nil
 	}
 
 	// [K,M] no ONNX; nn.Linear quer [M,K].
@@ -502,6 +523,7 @@ func montaMatMul(b *builder, n *onnx.Node) (*operation, error) {
 
 	return novaOp(n, func(ws *nn.Workspace, ins []*tensor.Tensor) ([]*tensor.Tensor, error) {
 		x := ins[0]
+		formaOrig := x.Shape
 		if x.Rank() != 2 {
 			achatado, err := achatarEm(ws, x, x.Rank()-1)
 			if err != nil {
@@ -512,6 +534,19 @@ func montaMatMul(b *builder, n *onnx.Node) (*operation, error) {
 		out, err := camada.Forward(ws, x)
 		if err != nil {
 			return nil, err
+		}
+
+		// achatarEm colapsou tudo antes da ultima dimensao pra caber num
+		// nn.Linear 2D -- um MatMul de sequencia ([N,T,Cin] contra peso
+		// [Cin,Cout]) precisa do formato original de volta, com Cout no
+		// lugar de Cin, ou uma soma residual logo depois (comum em bloco de
+		// atencao) quebra tentando somar [N,T,Cout] com [N*T,Cout].
+		if len(formaOrig) != 2 {
+			forma := append(append([]int(nil), formaOrig[:len(formaOrig)-1]...), outF)
+			out, err = out.Reshape(forma...)
+			if err != nil {
+				return nil, err
+			}
 		}
 		return []*tensor.Tensor{out}, nil
 	}), nil

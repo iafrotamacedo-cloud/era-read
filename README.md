@@ -138,7 +138,7 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 | 2 | `geom` | polígono, homografia (com `RemapHomography`, que já cobre a retificação de N1), ajuste de curva, remap | **pronto** |
 | 3 | `detect` | DBNet + contornos + expansão de polígono | **funcionando** — validado com imagem real contra o ONNX Runtime (99,999% de similaridade) e testado em dois documentos reais da Frota Macedo (102 e 60 regiões, ver "Testado em documento real" abaixo) |
 | 4 | `dewarp` | medidor de deformação (decide N0/N1/N2/N3 a partir dos polígonos), retificação por linha de N2 — e N3 depois | **pronto** (N3 fica para quando entrar rede) |
-| 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | — |
+| 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | parcial — o grafo do modelo escolhido já monta, executa e bate com o ONNX Runtime (ver "SVTR: o grafo já roda" abaixo); falta o pré-processamento de linha e a decodificação CTC |
 | 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; colunas e tabela faltam |
 | 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; ligar aos campos de cada tipo de documento falta |
 
@@ -398,6 +398,126 @@ de captura diferentes (PDF gerado por software vs. foto de tela). Não prova
 nada sobre reconhecimento de texto (fase 5, ainda não implementada) -- o que
 sai daqui são só posições de texto, não o texto em si.
 
+## SVTR: o grafo já roda -- 14/09/2026
+
+Primeiro passo da fase 5: escolher o modelo de reconhecimento e fazer o
+grafo dele montar e executar contra o `.onnx` real, do jeito que a fase 3
+fez com o detector -- ops descobertas testando o modelo de verdade, não só
+lendo código-fonte.
+
+### Por que não é o mesmo modelo da família do detector
+
+`ch_PP-OCRv4_det` (o detector, já em uso) é praticamente cego a idioma: ele
+acha "aqui tem texto", não decodifica caractere nenhum. Quem precisa bater
+com o idioma é o *reconhecedor*, porque ele decodifica contra um dicionário
+de caracteres fixo -- e o `ch_PP-OCRv4_rec` "irmão" do detector tem
+dicionário **chinês**, sem garantia de cobrir acento português (ç, ã, õ),
+que aparece direto em nota fiscal ("SERVIÇO", "ENDEREÇO").
+
+Escolhido em vez disso: **`latin_PP-OCRv3_mobile_rec`**, o modelo que o
+próprio PaddleOCR usa para francês, espanhol, italiano, português etc. --
+mesma arquitetura (SVTR_LCNet + PP-LCNetV3), dicionário diferente
+(`latin_dict.txt`, 186 caracteres, conferido na fonte primária do
+PaddleOCR no GitHub: cobre à á â ã ç é ê í ó ô õ ú ü, o alfabeto português
+inteiro). É exatamente a arquitetura multilíngue oficial do PaddleOCR: um
+detector compartilhado entre idiomas, um reconhecedor por idioma.
+
+### Licença: uma divergência entre o checkpoint oficial e o espelho ONNX
+
+O checkpoint original, `PaddlePaddle/latin_PP-OCRv3_mobile_rec` no Hugging
+Face (organização oficial do PaddlePaddle) declara **Apache 2.0** -- mas
+esse repositório só tem o formato de inferência do Paddle
+(`inference.json` + `.pdiparams`), não `.onnx`. O `.onnx` convertido veio de
+um espelho de terceiro, `docato/PaddleOCR_Mobile_Models`
+(via `paddle2onnx`), cuja própria página declara **MIT**. As duas licenças
+não são incompatíveis na prática (MIT é mais permissiva que Apache 2.0), mas
+a divergência não foi resolvida -- fica registrada para quem for usar isto
+em produção conferir qual das duas vale, em vez de presumir.
+
+### As ops que faltavam, achadas testando o `.onnx` real
+
+Do mesmo jeito que a fase 3: inspecionado com o próprio parser da ERA, não
+por leitura de código-fonte. 535 nós, 25 tipos de operação -- 6 não
+existiam ainda:
+
+| Op | Ocorrências | Para quê |
+|---|---|---|
+| `HardSwish` | 27 | ativação do backbone PP-LCNetV3 (`x * HardSigmoid(x)`, alpha/beta fixos) |
+| `ReduceMean` | 10 | media -> subtrai -> `Pow` -> media -> `Sqrt` -> `Div`: normalização decomposta manualmente, sem `LayerNormalization` |
+| `Pow` | 5 | a mesma decomposição acima (eleva ao quadrado antes de tirar a média) |
+| `Sqrt` | 5 | idem |
+| `Shape` | 4 | forma da própria entrada, para calcular reshape em tempo de execução |
+| `Slice` | 8 | recorte por eixo com índice calculado (dinâmico, não fixo) |
+
+Implementadas em `graph/elementwise.go` (`HardSwish`, `Sqrt`, `Pow` como
+mais um caso de `montaBinario`), `graph/reduce.go` (`ReduceMean`) e
+`graph/slice.go` (`Shape` foi para `shape.go`, ao lado de `Reshape`; `Slice`
+ganhou arquivo próprio por ser mais envolvido: início/fim/passo por eixo,
+índice negativo, passo negativo).
+
+### Dois bugs reais, achados só ao montar o grafo de verdade
+
+Nenhum dos dois apareceu na fase 3 porque o detector é uma rede
+convolucional simples -- os dois só existem porque um transformer (SVTR)
+aplica reshape e multiplicação de matriz de um jeito que uma CNN não usa.
+
+**1. `Reshape` só aceitava forma constante.** Um exportador que suporte
+largura variável (uma linha de texto recortada, cujo comprimento em pixels
+depende de quantos caracteres tem) calcula a forma alvo do `Reshape` **em
+execução**, via `Shape` sobre a própria entrada -- não como um número fixo
+gravado na montagem. `montaReshape` exigia que a forma já estivesse
+resolvida como peso constante na montagem (`b.peso`), o que bastava para o
+detector (formas sempre fixas) e falhava aqui dizendo que a entrada
+"precisa ser um peso constante", mesmo vindo de uma conta legítima sobre o
+próprio tensor. Corrigido lendo a forma do tensor em **execução**
+(`ins[1]`), não mais na montagem -- generalização, não gambiarra: continua
+funcionando para o caso antigo (forma fixa), e passa a funcionar para o
+novo.
+
+**2. `MatMul` de peso fixo não desfazia o achatamento.** O caminho rápido de
+`MatMul` contra peso constante (vira `nn.Linear`) precisa de entrada 2D;
+para uma entrada 3D `[N,T,Cin]` (uma sequência inteira, o caso comum em
+bloco de atenção), ele achatava para `[N*T,Cin]`, multiplicava, e devolvia
+o resultado **achatado**, sem desfazer. A soma residual logo depois (comum
+em bloco de atenção: `x + Atencao(x)`) quebrava comparando `[N,T,Cout]` com
+`[N*T,Cout]`. Corrigido devolvendo ao formato original (`[N,T,Cout]`) antes
+de sair da operação.
+
+Junto, ainda foi preciso um `MatMul` genérico de verdade
+(`graph/matmul.go`, `matmulGenerico`) para o caso em que **nenhum** dos dois
+lados é peso -- a auto-atenção calcula `Q @ Kᵀ`, e os dois só existem depois
+que a imagem chega. Trata lote e transmissão de forma como `Add`/`Mul` já
+tratam, só que para as duas últimas dimensões virarem multiplicação de
+matriz de verdade.
+
+### O grafo bate com o ONNX Runtime
+
+Mesma entrada fixa (semente aleatória do NumPy, reproduzível), rodada nos
+dois lados:
+
+```
+entrada [2,3,48,320] (lote de 2, a arquitetura aceita lote e largura
+dinâmicos -- testado nos dois eixos)
+saída ONNX Runtime: [2,40,187], soma 80,0 (softmax por posição, 2×40
+posições)
+saída ERA READ:     [2,40,187]
+diferença média: 3,2×10⁻⁹  |  diferença máxima: 8,3×10⁻⁷
+similaridade de cosseno: 1,0000001
+```
+
+Diferença de ponto flutuante entre duas implementações independentes, não
+divergência de lógica -- ordens de grandeza menor que a diferença de
+JPEG-vs-PNG que a fase 3 encontrou (99,999%), porque aqui a entrada não
+passou por nenhum decodificador de imagem com lugar para variar.
+
+**O que falta para a fase 5 fechar:** pré-processamento de linha (recorte
+já vem do detector + dewarp; falta redimensionar para a altura fixa que a
+rede espera, 48px, mantendo proporção, e decidir o que fazer com largura
+maior que o lote), e a decodificação CTC (colapsar a saída `[T,187]` em
+texto, removendo repetição e o token em branco). O grafo em si -- a parte
+que testar contra um modelo real de verdade sempre revela -- já está pronto
+e validado.
+
 ## Escolhas de modelo
 
 **Detecção: DBNet, via PP-OCRv4 do PaddleOCR.** Pesquisado em 14/09/2026.
@@ -418,6 +538,12 @@ caminho mais pesado. Em Go puro é o inverso:
 | Precisa de | LSTM bidirecional | matmul, softmax, layernorm, GELU |
 | Custo aqui | alto — kernel sequencial novo, paraleliza mal | baixo — o `era` já roda matmul a 13 GFLOPS |
 | Precisão | boa | melhor |
+
+Modelo escolhido: `latin_PP-OCRv3_mobile_rec` (dicionário latino, cobre
+acento português) — não o `ch_PP-OCRv4_rec` da mesma geração do detector,
+que é chinês. Detalhe da escolha, da licença (com uma divergência entre
+fonte primária e o espelho `.onnx` ainda não resolvida) e da validação do
+grafo contra o ONNX Runtime em "SVTR: o grafo já roda" acima.
 
 **Extração: regras e geometria antes de modelo.** A rota "um modelo faz
 tudo" custa centenas de MB de pesos e devolve resultado não determinístico.
@@ -441,14 +567,18 @@ go vet ./...
 
 ## Estado
 
-Fases 1, 2, 3 e 4 prontas; fases 6 e 7 parciais (ver Roteiro). A fase 3
-(detecção) está validada contra imagem real e o ONNX Runtime — 99,999% de
-similaridade de cosseno, 33 regiões de texto encontradas corretamente numa
-foto de verdade (`ch_PP-OCRv4_det_infer`, ver "Validado contra o ONNX
-Runtime" acima) — e testada em dois documentos reais da Frota Macedo: 102
-regiões num PDF em alta resolução, 60 num print de tela de resolução mais
-baixa, com uma falha de detecção identificada e atribuída à resolução (ver
-"Testado em documento real" acima).
+Fases 1, 2, 3 e 4 prontas; fase 5 parcial; fases 6 e 7 parciais (ver
+Roteiro). A fase 3 (detecção) está validada contra imagem real e o ONNX
+Runtime — 99,999% de similaridade de cosseno, 33 regiões de texto
+encontradas corretamente numa foto de verdade (`ch_PP-OCRv4_det_infer`, ver
+"Validado contra o ONNX Runtime" acima) — e testada em dois documentos reais
+da Frota Macedo: 102 regiões num PDF em alta resolução, 60 num print de
+tela de resolução mais baixa, com uma falha de detecção identificada e
+atribuída à resolução (ver "Testado em documento real" acima). A fase 5
+(reconhecimento) tem o grafo do `latin_PP-OCRv3_mobile_rec` montando,
+executando e batendo com o ONNX Runtime (similaridade de cosseno
+1,0000001) — faltam o pré-processamento de linha e a decodificação CTC (ver
+"SVTR: o grafo já roda" acima).
 
 ## Licença
 

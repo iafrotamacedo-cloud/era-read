@@ -476,6 +476,15 @@ func TestAtivacoes(t *testing.T) {
 			}
 			return v
 		}},
+		{"HardSwish", nil, func(v float32) float32 {
+			y := v/6 + 0.5
+			if y < 0 {
+				y = 0
+			} else if y > 1 {
+				y = 1
+			}
+			return v * y
+		}},
 	}
 
 	for _, c := range casos {
@@ -489,6 +498,20 @@ func TestAtivacoes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSqrt usa so entrada nao-negativa -- Sqrt de negativo da NaN, e isso
+// nao e o que este teste quer medir.
+func TestSqrt(t *testing.T) {
+	m := grafoSimples(no("Sqrt", "s", []string{"x"}, []string{"y"}))
+	got := rodar(t, m, tensor.MustFromSlice([]float32{4, 9, 0, 2}, 1, 4))
+	quero := []float32{2, 3, 0, float32(math.Sqrt(2))}
+	for i := range quero {
+		if !closeEnough(got[i], quero[i]) {
+			t.Errorf("saida = %v, quero %v", got, quero)
+			break
+		}
 	}
 }
 
@@ -580,6 +603,7 @@ func TestAritmetica(t *testing.T) {
 		{"Sub", []float32{-9, -18}},
 		{"Mul", []float32{10, 40}},
 		{"Div", []float32{0.1, 0.1}},
+		{"Pow", []float32{1, 1048576}}, // 1^10=1, 2^20=1048576
 	}
 
 	for _, c := range casos {
@@ -776,6 +800,227 @@ func TestSqueezeUnsqueeze(t *testing.T) {
 			t.Error("Squeeze de dimensao maior que 1 deveria dar erro")
 		}
 	})
+}
+
+func TestReduceMean(t *testing.T) {
+	t.Run("um eixo, keepdims padrao", func(t *testing.T) {
+		m := grafoSimples(no("ReduceMean", "rm", []string{"x"}, []string{"y"}, aInts("axes", 1)))
+		g, _ := New(m)
+		outs, err := g.Run(nn.NewWorkspace(), map[string]*tensor.Tensor{
+			"x": tensor.MustFromSlice([]float32{1, 2, 3, 4, 5, 6}, 2, 3),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []int{2, 1}; !reflect.DeepEqual(outs["y"].Shape, want) {
+			t.Errorf("forma = %v, quero %v", outs["y"].Shape, want)
+		}
+		if want := []float32{2, 5}; !reflect.DeepEqual(outs["y"].Flat(), want) {
+			t.Errorf("dados = %v, quero %v", outs["y"].Flat(), want)
+		}
+	})
+
+	t.Run("keepdims=0 remove o eixo", func(t *testing.T) {
+		m := grafoSimples(no("ReduceMean", "rm", []string{"x"}, []string{"y"},
+			aInts("axes", 1), aInt("keepdims", 0)))
+		g, _ := New(m)
+		outs, err := g.Run(nn.NewWorkspace(), map[string]*tensor.Tensor{
+			"x": tensor.MustFromSlice([]float32{1, 2, 3, 4, 5, 6}, 2, 3),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []int{2}; !reflect.DeepEqual(outs["y"].Shape, want) {
+			t.Errorf("forma = %v, quero %v", outs["y"].Shape, want)
+		}
+	})
+
+	t.Run("sem axes reduz tudo", func(t *testing.T) {
+		m := grafoSimples(no("ReduceMean", "rm", []string{"x"}, []string{"y"}))
+		got := rodar(t, m, tensor.MustFromSlice([]float32{1, 2, 3, 4}, 2, 2))
+		if want := []float32{2.5}; !reflect.DeepEqual(got, want) {
+			t.Errorf("saida = %v, quero %v", got, want)
+		}
+	})
+}
+
+func TestShape(t *testing.T) {
+	t.Run("forma inteira", func(t *testing.T) {
+		m := grafoSimples(no("Shape", "sh", []string{"x"}, []string{"y"}))
+		got := rodar(t, m, tensor.MustFromSlice([]float32{0, 0, 0, 0, 0, 0}, 2, 3, 1))
+		if want := []float32{2, 3, 1}; !reflect.DeepEqual(got, want) {
+			t.Errorf("saida = %v, quero %v", got, want)
+		}
+	})
+
+	t.Run("com start e end", func(t *testing.T) {
+		m := grafoSimples(no("Shape", "sh", []string{"x"}, []string{"y"},
+			aInt("start", 1), aInt("end", -1)))
+		got := rodar(t, m, tensor.MustFromSlice([]float32{0, 0, 0, 0, 0, 0}, 2, 3, 1, 1))
+		if want := []float32{3, 1}; !reflect.DeepEqual(got, want) {
+			t.Errorf("saida = %v, quero %v", got, want)
+		}
+	})
+}
+
+func TestSlice(t *testing.T) {
+	t.Run("basico, um eixo", func(t *testing.T) {
+		m := grafoSimples(
+			no("Slice", "sl", []string{"x", "starts", "ends", "axes"}, []string{"y"}),
+			peso("starts", []int64{1}, []float32{1}),
+			peso("ends", []int64{1}, []float32{4}),
+			peso("axes", []int64{1}, []float32{1}),
+		)
+		got := rodar(t, m, tensor.MustFromSlice([]float32{1, 2, 3, 4, 5}, 1, 5))
+		if want := []float32{2, 3, 4}; !reflect.DeepEqual(got, want) {
+			t.Errorf("saida = %v, quero %v", got, want)
+		}
+	})
+
+	t.Run("indice negativo", func(t *testing.T) {
+		m := grafoSimples(
+			no("Slice", "sl", []string{"x", "starts", "ends", "axes"}, []string{"y"}),
+			peso("starts", []int64{1}, []float32{-3}),
+			peso("ends", []int64{1}, []float32{-1}),
+			peso("axes", []int64{1}, []float32{1}),
+		)
+		got := rodar(t, m, tensor.MustFromSlice([]float32{1, 2, 3, 4, 5}, 1, 5))
+		if want := []float32{3, 4}; !reflect.DeepEqual(got, want) {
+			t.Errorf("saida = %v, quero %v", got, want)
+		}
+	})
+
+	t.Run("passo negativo inverte", func(t *testing.T) {
+		m := grafoSimples(
+			no("Slice", "sl", []string{"x", "starts", "ends", "axes", "steps"}, []string{"y"}),
+			peso("starts", []int64{1}, []float32{-1}), // ultimo elemento
+			peso("ends", []int64{1}, []float32{-6}),   // ONNX usa um valor bem negativo p/ "ate o inicio"
+			peso("axes", []int64{1}, []float32{1}),
+			peso("steps", []int64{1}, []float32{-1}),
+		)
+		got := rodar(t, m, tensor.MustFromSlice([]float32{1, 2, 3, 4, 5}, 1, 5))
+		if want := []float32{5, 4, 3, 2, 1}; !reflect.DeepEqual(got, want) {
+			t.Errorf("saida = %v, quero %v", got, want)
+		}
+	})
+
+	t.Run("sem axes/steps cobre todos os eixos", func(t *testing.T) {
+		m := grafoSimples(
+			no("Slice", "sl", []string{"x", "starts", "ends"}, []string{"y"}),
+			peso("starts", []int64{2}, []float32{0, 1}),
+			peso("ends", []int64{2}, []float32{2, 2}),
+		)
+		g, _ := New(m)
+		outs, err := g.Run(nn.NewWorkspace(), map[string]*tensor.Tensor{
+			"x": tensor.MustFromSlice([]float32{1, 2, 3, 4, 5, 6}, 2, 3),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := []int{2, 1}; !reflect.DeepEqual(outs["y"].Shape, want) {
+			t.Errorf("forma = %v, quero %v", outs["y"].Shape, want)
+		}
+		if want := []float32{2, 5}; !reflect.DeepEqual(outs["y"].Flat(), want) {
+			t.Errorf("dados = %v, quero %v", outs["y"].Flat(), want)
+		}
+	})
+}
+
+// TestReshapeComFormaDinamica cobre o caso que o modelo de reconhecimento
+// (SVTR/PP-OCRv3) revelou: um exportador que suporte largura variavel
+// calcula a forma alvo do Reshape em EXECUCAO, via Shape sobre a propria
+// entrada -- nao como um numero fixo gravado na montagem. Antes desta
+// generalizacao, montaReshape so aceitava a forma como peso constante, e
+// esse Reshape falhava dizendo que a entrada "precisa ser um peso
+// constante", mesmo vindo de uma conta legitima sobre o proprio tensor.
+func TestReshapeComFormaDinamica(t *testing.T) {
+	m := modelo(&onnx.Graph{
+		Nodes: []*onnx.Node{
+			no("Shape", "forma_de_x", []string{"x"}, []string{"forma"}),
+			no("Reshape", "r", []string{"x", "forma"}, []string{"y"}),
+		},
+		Inputs:  []*onnx.ValueInfo{{Name: "x"}},
+		Outputs: []*onnx.ValueInfo{{Name: "y"}},
+	})
+
+	// Shape(x) devolve [2,3]; Reshape para a propria forma e a identidade --
+	// so serve para confirmar que o valor dinamico chegou certo ao Reshape.
+	got := rodar(t, m, tensor.MustFromSlice([]float32{1, 2, 3, 4, 5, 6}, 2, 3))
+	if want := []float32{1, 2, 3, 4, 5, 6}; !reflect.DeepEqual(got, want) {
+		t.Errorf("saida = %v, quero %v", got, want)
+	}
+}
+
+// TestMatMulDoisOperandosDinamicos cobre o caso que a atencao de uma camada
+// de transformer usa (Q @ K^T): nenhum dos dois lados e peso treinado, os
+// dois so existem em execucao. E diferente do caso comum coberto por
+// TestMatMul, onde o segundo operando e peso fixo e vira nn.Linear.
+func TestMatMulDoisOperandosDinamicos(t *testing.T) {
+	m := modelo(&onnx.Graph{
+		Nodes: []*onnx.Node{
+			no("MatMul", "mm", []string{"a", "b"}, []string{"y"}),
+		},
+		Inputs:  []*onnx.ValueInfo{{Name: "a"}, {Name: "b"}},
+		Outputs: []*onnx.ValueInfo{{Name: "y"}},
+	})
+
+	g, err := New(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// a: [1,2,3] (identidade em bloco), b: [1,3,2] -- produto [1,2,2].
+	outs, err := g.Run(nn.NewWorkspace(), map[string]*tensor.Tensor{
+		"a": tensor.MustFromSlice([]float32{1, 0, 0, 0, 1, 0}, 1, 2, 3),
+		"b": tensor.MustFromSlice([]float32{5, 6, 7, 8, 9, 10}, 1, 3, 2),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int{1, 2, 2}; !reflect.DeepEqual(outs["y"].Shape, want) {
+		t.Errorf("forma = %v, quero %v", outs["y"].Shape, want)
+	}
+	// linha 0 de a = [1,0,0] -> pega a linha 0 de b = [5,6]
+	// linha 1 de a = [0,1,0] -> pega a linha 1 de b = [7,8]
+	if want := []float32{5, 6, 7, 8}; !reflect.DeepEqual(outs["y"].Flat(), want) {
+		t.Errorf("dados = %v, quero %v", outs["y"].Flat(), want)
+	}
+}
+
+// TestMatMulPesoPreservaFormaDeSequencia cobre o bug real que o
+// reconhecimento (SVTR) revelou: aplicar um MatMul de peso fixo (o caminho
+// rapido, via nn.Linear) numa entrada 3D [N,T,Cin] achatava para 2D
+// [N*T,Cin], multiplicava, e devolvia o resultado ACHATADO -- sem desfazer
+// o achatamento. Um Add logo depois, somando contra outro tensor [N,T,Cout]
+// (uma soma residual, comum em bloco de atencao), quebrava comparando
+// [N,T,Cout] com [N*T,Cout]. O detector (fase 3) nunca expos isso porque so
+// chamava MatMul/Gemm depois de reduzir tudo a 2D.
+func TestMatMulPesoPreservaFormaDeSequencia(t *testing.T) {
+	m := grafoSimples(
+		no("MatMul", "mm", []string{"x", "w"}, []string{"y"}),
+		peso("w", []int64{3, 2}, []float32{1, 0, 0, 1, 0, 0}), // [K,M]: pega as 2 primeiras colunas
+	)
+
+	g, err := New(m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// x: [N=2,T=2,Cin=3] -- rank 3, o caso que expos o bug.
+	outs, err := g.Run(nn.NewWorkspace(), map[string]*tensor.Tensor{
+		"x": tensor.MustFromSlice([]float32{
+			1, 2, 3, 4, 5, 6,
+			7, 8, 9, 10, 11, 12,
+		}, 2, 2, 3),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int{2, 2, 2}; !reflect.DeepEqual(outs["y"].Shape, want) {
+		t.Errorf("forma = %v, quero %v (MatMul de peso fixo devia devolver rank 3, nao achatado)",
+			outs["y"].Shape, want)
+	}
+	if want := []float32{1, 2, 4, 5, 7, 8, 10, 11}; !reflect.DeepEqual(outs["y"].Flat(), want) {
+		t.Errorf("dados = %v, quero %v", outs["y"].Flat(), want)
+	}
 }
 
 func TestIdentityEDropout(t *testing.T) {
