@@ -14,12 +14,14 @@ import (
 	"github.com/iafrotamacedo-cloud/era-read/geom"
 )
 
-// Word e uma palavra reconhecida: a caixa que a delimita e o texto que o
-// reconhecedor devolveu para ela (fase 5 do roteiro, que ainda nao existe
-// -- este pacote so organiza o que ela vai produzir).
+// Word e uma palavra reconhecida: a caixa que a delimita, o texto que o
+// reconhecedor devolveu para ela, e a confianca media que ele reportou
+// (ver recog.Resultado -- este pacote so organiza o que a fase 5 produz,
+// nao recalcula nada a partir do conteudo).
 type Word struct {
-	Box  geom.Polygon
-	Text string
+	Box        geom.Polygon
+	Text       string
+	Confidence float32
 }
 
 func (w Word) yRange() (min, max float64) {

@@ -35,5 +35,25 @@ func ExtractBaseline(p geom.Polygon) ([]geom.Point, error) {
 	for i, pt := range borda {
 		baseline[metade-1-i] = pt
 	}
+
+	// detect.ToLinePolygon divide um contorno DENSO em cima/baixo cortando
+	// o mesmo laco em dois arcos, do vertice mais a esquerda ao mais a
+	// direita e vice-versa -- os dois arcos comecam e terminam EXATAMENTE
+	// no mesmo par de vertices (p[metade-1]==p[metade] e p[n-1]==p[0]).
+	// Para uma mancha mais larga que alta (o caso normal), esses dois
+	// vertices compartilhados ficam perto do MEIO da altura da mancha --
+	// onde ela e mais larga -- nao em cima nem embaixo. Sem descartar os
+	// dois, a baseline sai com as pontas puxadas para o meio da altura,
+	// mesmo numa linha perfeitamente reta: MeasureLine ve um "salto" nas
+	// pontas e Classify erra para N2/N3.
+	//
+	// Um quadrilatero simples (n=4) NAO tem esse compartilhamento -- os 4
+	// vertices sao 4 cantos distintos -- entao a checagem de igualdade so
+	// dispara para o caso de contorno denso, e so remove quando sobram
+	// pelo menos 2 pontos depois (metade >= 4).
+	if metade >= 4 && p[metade-1] == p[metade] && p[n-1] == p[0] {
+		baseline = baseline[1 : metade-1]
+	}
+
 	return baseline, nil
 }

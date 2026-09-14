@@ -15,6 +15,7 @@ package imgproc
 import (
 	"fmt"
 	"image"
+	"image/color"
 )
 
 // Gray e uma imagem em escala de cinza, float32 em [0,1], linha a linha.
@@ -133,4 +134,44 @@ func FromImageChannel(src image.Image, ch Channel) *Gray {
 		}
 	}
 	return dst
+}
+
+// ComposeBGR reconstroi uma image.Image a partir de tres planos Gray -- B,
+// G, R, na mesma ordem e convencao de FromImageChannel -- do mesmo tamanho.
+// E o inverso de tres chamadas a FromImageChannel: existe para quando cada
+// canal de cor precisou ser retificado (Remap, RemapHomography,
+// dewarp.RectifyLine) separadamente, porque essas funcoes so trabalham em
+// Gray, e o resultado colorido precisa voltar a ser uma image.Image comum
+// para alimentar algo que espera isso -- recog.Preprocess, por exemplo.
+func ComposeBGR(b, g, r *Gray) (image.Image, error) {
+	if b.W != g.W || b.W != r.W || b.H != g.H || b.H != r.H {
+		return nil, fmt.Errorf("imgproc: ComposeBGR com canais de tamanhos diferentes: B=%dx%d G=%dx%d R=%dx%d",
+			b.W, b.H, g.W, g.H, r.W, r.H)
+	}
+
+	img := image.NewNRGBA(image.Rect(0, 0, b.W, b.H))
+	for y := 0; y < b.H; y++ {
+		for x := 0; x < b.W; x++ {
+			img.SetNRGBA(x, y, color.NRGBA{
+				R: paraUint8(r.At(x, y)),
+				G: paraUint8(g.At(x, y)),
+				B: paraUint8(b.At(x, y)),
+				A: 255,
+			})
+		}
+	}
+	return img, nil
+}
+
+// paraUint8 converte um valor em [0,1] (a faixa que todo Gray usa) para
+// [0,255], grudando nas pontas em vez de estourar -- um remap bilinear
+// pode extrapolar levemente acima de 1 ou abaixo de 0 perto de uma borda.
+func paraUint8(v float32) uint8 {
+	if v <= 0 {
+		return 0
+	}
+	if v >= 1 {
+		return 255
+	}
+	return uint8(v*255 + 0.5)
 }

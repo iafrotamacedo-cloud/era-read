@@ -138,8 +138,9 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 | 2 | `geom` | polígono, homografia (com `RemapHomography`, que já cobre a retificação de N1), ajuste de curva, remap | **pronto** |
 | 3 | `detect` | DBNet + contornos + expansão de polígono | **funcionando** — validado com imagem real contra o ONNX Runtime (99,999% de similaridade) e testado em dois documentos reais da Frota Macedo (102 e 60 regiões, ver "Testado em documento real" abaixo) |
 | 4 | `dewarp` | medidor de deformação (decide N0/N1/N2/N3 a partir dos polígonos), retificação por linha de N2 — e N3 depois | **pronto** (N3 fica para quando entrar rede) |
-| 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | **funcionando** — pré-processamento de linha, grafo e decodificação CTC validados com linha de texto real de documento da Frota Macedo (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais" abaixo); falta ligar a um pipeline de ponta a ponta com `detect`+`layout` e lotear mais de uma linha por vez |
+| 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | **funcionando** — pré-processamento de linha, grafo e decodificação CTC validados com linha de texto real de documento da Frota Macedo (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais" abaixo) |
 | 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; colunas e tabela faltam |
+| — | `read` | liga `detect`+`dewarp`+`recog`+`layout` numa passagem só: página inteira → linhas de texto | **funcionando** — roda de ponta a ponta nos dois documentos reais da Frota Macedo já usados nas fases 3 e 5 (ver "`read`: a página inteira, de ponta a ponta" abaixo); qualidade do texto ainda precisa de ajuste fino (perde espaço entre palavras dentro de uma região detectada como uma só, alguns recortes cortam a borda do texto) |
 | 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; ligar aos campos de cada tipo de documento falta |
 
 A fase 4 (`dewarp`) foi adiantada fora de ordem porque só depende de
@@ -592,14 +593,108 @@ detecção. Não impediu o texto de sair certo na linha 1 nem de errar nos
 mesmos dois lugares que a referência erraria com a mesma imagem de baixa
 resolução -- é ruído de implementação, não divergência de lógica.
 
-**O que a fase 5 ainda não faz:** decidir sozinha onde cortar uma linha
-dentro da página (isso é `detect` + `layout`, já prontos, mas ainda não
-ligados a `recog` num pipeline de ponta a ponta) e processar lote de mais
-de uma linha de uma vez (cada `Preprocess` produz sua própria largura;
-lotear linhas de larguras diferentes exige um preenchimento comum, que
-ainda não foi escrito porque nenhum caso de uso pediu velocidade de lote
-ainda). O que já funciona: pré-processar uma linha, rodar a rede, e
-decodificar em texto -- em documento real, não só em imagem de vitrine.
+**O que a fase 5 ainda não faz sozinha:** decidir onde cortar uma linha
+dentro da página, e processar lote de mais de uma linha de uma vez (cada
+`Preprocess` produz sua própria largura; lotear linhas de larguras
+diferentes exige um preenchimento comum, que ainda não foi escrito porque
+nenhum caso de uso pediu velocidade de lote ainda). A primeira metade --
+onde cortar -- é o que o pacote `read` resolve, ligando `detect` a
+`recog`, a seguir.
+
+## `read`: a página inteira, de ponta a ponta -- 14/09/2026
+
+Com detecção, retificação e reconhecimento cada um funcionando sozinho,
+faltava a cola: `read.Page` recebe uma imagem de página inteira e os dois
+grafos (detecção e reconhecimento), e devolve linhas de texto já na ordem
+de leitura --
+
+```
+imagem → detect.Preprocess → grafo de deteccao → detect.Detect
+       → para cada regiao: mede a deformacao (dewarp) → retifica
+         (homografia se for reta, curva se for N2) → recog.Preprocess
+         → grafo de reconhecimento → recog.DecodeCTC
+       → layout.GroupLines
+```
+
+`ProcessarRegioes` é a metade de baixo desse desenho -- tudo depois da
+detecção -- separada para poder testar sem precisar de uma rede de
+detecção de verdade: os testes constroem o mapa de probabilidade a mão
+(um retângulo com as pontas arredondadas, a forma que uma detecção real
+tem depois do `Unclip`) e usam uma rede de reconhecimento de brinquedo
+(três camadas, sem pretensão nenhuma de ler caractere de verdade) só para
+confirmar que a fiação -- retificar, rodar a rede, decodificar, agrupar --
+está correta. A validação de que o reconhecimento *de verdade* funciona já
+existe contra o `.onnx` real (fases 3 e 5, acima); aqui o que está sob
+teste é a cola, não os modelos.
+
+### Um bug real, achado só ao ligar as duas metades
+
+Testar a fiação com uma detecção sintética -- mas geometricamente
+realista -- revelou um bug que nenhuma das duas fases sozinha tinha
+como expor: toda região reta que passava por `detect.ToLinePolygon` e
+depois por `dewarp.ExtractBaseline`/`MeasureLine` saía classificada como
+N3 (curvatura irregular), mesmo sendo perfeitamente reta.
+
+Causa: `ToLinePolygon` divide o contorno denso de uma região em duas
+metades ("cima" e "baixo") cortando o mesmo laço em dois arcos que
+**começam e terminam exatamente no mesmo par de vértices** -- o ponto mais
+à esquerda e o mais à direita do contorno inteiro. Para uma região mais
+larga que alta (o caso normal), esses dois vértices compartilhados ficam
+perto do **meio da altura** da região, não em cima nem embaixo -- é ali
+que ela é mais larga. `ExtractBaseline` pegava esses dois pontos junto
+com o resto da borda de baixo, e `MeasureLine` via um salto artificial de
+quase a altura inteira da região nas duas pontas de toda baseline, mesmo
+de uma linha reta. Uma imagem sintética com uma única detecção não
+pegaria isso por acaso -- só apareceu com uma detecção real (via
+`detect.Detect`, não um quadrilátero desenhado à mão) processada pelo
+resto do pipeline de verdade.
+
+Corrigido em `dewarp.ExtractBaseline`: quando a borda de cima e a de baixo
+compartilham os vértices das pontas (a assinatura desse corte em dois
+arcos), os dois são descartados antes de virar baseline. Um quadrilátero
+simples de 4 vértices (sem esse compartilhamento) não é afetado -- a
+checagem só dispara para o caso de contorno denso, e a mesma lógica foi
+replicada em `read.cantosDaLinha` para os 4 cantos usados na retificação
+por homografia (N0/N1), que tinham o mesmo problema pela mesma razão.
+Testes antigos de `dewarp` continuam passando sem mudança; o teste novo
+que capturou o bug (`TestProcessarRegioesFiacaoCompleta`) só passou depois
+do conserto.
+
+### Rodado nos dois documentos reais da Frota Macedo
+
+Com os dois modelos reais (`ch_PP-OCRv4_det` + `latin_PP-OCRv3_mobile_rec`)
+e o mesmo dicionário da fase 5, `read.Page` nos dois documentos já usados
+nas fases 3 e 5:
+
+| Documento | Linhas lidas | Amostra |
+|---|---|---|
+| PDF em alta resolução (`CCF08092026.pdf`) | 28 | `"RODRIGUES MATERIAL DE CONSTRUCOESLTDA-ME (RO J: 14788633000"`, `"00001210 - CAP ESG PVC 40MM TIC Nalor Tot"` |
+| Print de tela (`nota_whatsapp_crop.png`) | 22 | `"ROTAMACEDOENGENHARIAEIRELICOOOOOOOO"`, `"idade ORTALEZ fone:85989280"` |
+
+O texto sai reconhecível -- nomes, CNPJ, valores, itens da tabela -- mas
+com dois defeitos visíveis, os dois honestos de nomear em vez de esconder:
+
+- **Espaço entre palavras se perde dentro de uma região.** Quando o
+  detector marca um campo inteiro ("RAZÃO SOCIAL: RODRIGUES...") como UMA
+  região em vez de uma por palavra, o reconhecedor devolve tudo colado --
+  ele não foi treinado para inserir espaço onde não há certeza alta de um
+  caractere de espaço de verdade. `layout.GroupLines` já junta várias
+  regiões com espaço quando elas chegam separadas; não tem como inserir
+  o que nunca existiu como região distinta.
+- **Recorte corta a borda do texto em algumas regiões**, perdendo a
+  primeira letra ou palavra (visível em `"AENTOAUXILIARDEVENDA-F"`, que
+  devia começar com "DOCUM"). A margem que `Unclip` acrescenta em volta de
+  cada região (fase 3) nem sempre é suficiente para o recorte de
+  `read.cantosDaLinha` -- ajustar isso é calibração fina de margem, não um
+  problema de fiação.
+
+**O que isso prova, e o que não prova:** as quatro fases já prontas
+(detecção, retificação, reconhecimento, layout) se conectam e produzem
+texto legível de um documento real de ponta a ponta -- o marco que o
+README já registrava como "o marco real" da fase 5. Não prova qualidade
+de produção: os dois defeitos acima são conhecidos, não escondidos, e
+ficam para quando alguém precisar de texto exato em vez de "dá para
+entender o que diz".
 
 ## Escolhas de modelo
 
@@ -664,8 +759,14 @@ ONNX Runtime (similaridade de cosseno 1,0000001) e o pacote `recog`
 reais de um documento da Frota Macedo — uma saiu perfeita, a outra errou
 dois caracteres, no mesmo tipo de limite de resolução baixa já documentado
 na fase 3 (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais"
-acima). Falta ligar isso a um pipeline de ponta a ponta com `detect` e
-`layout`.
+acima). O pacote `read` liga detecção, retificação, reconhecimento e
+layout numa passagem só e roda de ponta a ponta nos dois documentos reais
+da Frota Macedo -- 28 e 22 linhas de texto legível, com dois defeitos
+conhecidos (espaço perdido dentro de região detectada como uma peça só,
+recorte cortando a borda em algumas regiões) e um bug real de integração
+achado e corrigido no processo (`dewarp.ExtractBaseline` classificava
+linha reta como N3 -- ver "`read`: a página inteira, de ponta a ponta"
+acima).
 
 ## Licença
 
