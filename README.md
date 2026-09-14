@@ -136,7 +136,7 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 |---|---|---|---|
 | 1 | `imgproc` | I/O, cinza, normalização de iluminação, amostragem bilinear | **pronto** |
 | 2 | `geom` | polígono, homografia (com `RemapHomography`, que já cobre a retificação de N1), ajuste de curva, remap | **pronto** |
-| 3 | `detect` | DBNet + contornos + expansão de polígono | parcial — pré-processamento e pós-processamento **prontos**, testados de ponta a ponta contra o `.onnx` real; falta testar com imagem real (só ruído até agora) |
+| 3 | `detect` | DBNet + contornos + expansão de polígono | **funcionando** — validado com imagem real contra o ONNX Runtime (99,999% de similaridade), 33 regiões de texto detectadas corretamente numa foto de verdade |
 | 4 | `dewarp` | medidor de deformação (decide N0/N1/N2/N3 a partir dos polígonos), retificação por linha de N2 — e N3 depois | **pronto** (N3 fica para quando entrar rede) |
 | 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | — |
 | 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; colunas e tabela faltam |
@@ -232,7 +232,7 @@ específicos de cada tipo de documento — o que só faz sentido com a fase 5
 A Fase 5 é o marco real: fotografar um papel na mão e o texto sair certo.
 Antes disso é infraestrutura.
 
-As fases 1, 2, 4 e 6, e o pós-processamento da fase 3, são geometria e
+As fases 1, 2, 4 e 6, e o pré/pós-processamento da fase 3, são geometria e
 processamento de imagem — não tocam em rede nenhuma e não dependem de nada
 fora da biblioteca padrão.
 
@@ -315,13 +315,47 @@ Faixa [0,1] confere com a saida de um Sigmoid (mapa de probabilidade).
 ```
 
 **O que isso prova:** o executor aguenta a arquitetura inteira do PP-OCRv4 --
-672 nós, 14 tipos de operação, sem erro de forma nem de op. **O que isso não
-prova:** que os valores saem certos. A entrada foi ruído aleatório, não uma
-imagem real com o pré-processamento que o modelo espera (normalização por
-média/desvio-padrão) -- por isso a saída ficou quase toda zero, o esperado
-para ruído, não um sinal de acerto ou erro. Validação numérica de verdade
-(contra ONNX Runtime, com imagem real, mesma normalização) é trabalho da
-fase 3 propriamente dita, não deste teste de fumaça.
+672 nós, 14 tipos de operação, sem erro de forma nem de op. Com ruído
+aleatório isso não provava que os valores saem certos -- a validação de
+verdade veio depois, com imagem real (ver abaixo).
+
+### Validado contra o ONNX Runtime, com imagem real -- 14/09/2026
+
+Peguei a imagem de demonstração oficial do PaddleOCR/PaddleX
+(`general_ocr_002.png`, um cartão de embarque fotografado, texto em duas
+línguas) e comparei a saída deste código contra o ONNX Runtime rodando o
+mesmo `.onnx`, com o mesmo pré-processamento reproduzido em Python.
+
+**Primeira rodada, com a imagem em JPEG: só 99,96% de similaridade de
+cosseno** -- perto, mas não o suficiente pra confiar. Isolando cada etapa
+(comparei o tensor de entrada antes da rede, depois só o canal de cor antes
+de redimensionar, depois os pixels crus antes de qualquer conta) achei que
+a diferença já existia nos PIXELS DECODIFICADOS do JPEG -- antes de tocar
+em uma linha de código deste repositório. Decodificador de JPEG não é
+determinístico entre bibliotecas (o IDCT e o upsampling de crominância
+variam) -- `image/jpeg` do Go e o libjpeg do OpenCV simplesmente não
+concordam bit a bit no mesmo arquivo. Convertendo a mesma imagem para PNG
+(sem perdas, decodificação determinística) e repetindo a comparação:
+**99,999% de similaridade de cosseno**, diferença média de 0,00007. O
+resíduo que sobra é o esperado entre duas implementações numéricas
+independentes (Go e ONNX Runtime) acumulando arredondamento de ponto
+flutuante em ordem diferente ao longo de 672 nós -- não dá pra eliminar, e
+não é o mesmo tipo de erro que uma imagem real revelou de verdade (ver
+abaixo).
+
+**Essa mesma investigação achou um bug real:** `528 ÷ 32 = 16,5` exato --
+um empate. O `round()` do Python (usado pelo PaddleOCR de verdade) desempata
+para o par mais próximo (16); `math.Round` do Go desempata sempre pra cima
+(17). Só uma imagem real bateu numa razão exatamente em 0,5 -- nenhum caso
+sintético dos testes tinha pego isso por acaso. Corrigido com uma função
+que replica o desempate do Python (`arredondarParaParPython`), com teste
+dedicado e o caso exato que revelou o bug.
+
+Com a correção, rodei o detector completo (`Preprocess` → rede →
+`Detect` → `Rescale`) na mesma imagem: **33 regiões de texto encontradas**,
+a maioria com confiança acima de 0,98, caindo visivelmente em cima do texto
+de verdade -- cabeçalho bilíngue, campos, código de barras, até texto em
+cima de uma mancha na foto.
 
 ## Escolhas de modelo
 
@@ -366,13 +400,11 @@ go vet ./...
 
 ## Estado
 
-Fases 1, 2 e 4 prontas; fases 6 e 7 parciais (ver Roteiro). Fase 3
-(detecção) parcial: o motor de inferência está aqui dentro, independente;
-`detect/` tem pré-processamento (redimensiona, normaliza BGR) e
-pós-processamento (binariza, acha contorno, mede confiança, expande,
-adapta pro formato do `dewarp`) prontos e testados de ponta a ponta contra
-o `.onnx` real do candidato (`ch_PP-OCRv4_det_infer`). Falta testar com
-imagem real — até aqui só ruído aleatório confirmou que a fiação funciona.
+Fases 1, 2, 3 e 4 prontas; fases 6 e 7 parciais (ver Roteiro). A fase 3
+(detecção) está validada contra imagem real e o ONNX Runtime — 99,999% de
+similaridade de cosseno, 33 regiões de texto encontradas corretamente numa
+foto de verdade (`ch_PP-OCRv4_det_infer`, ver "Validado contra o ONNX
+Runtime" acima).
 
 ## Licença
 

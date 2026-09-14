@@ -118,9 +118,34 @@ func tamanhoRedimensionado(w, h int, limite float64) (resizeW, resizeH int) {
 }
 
 func arredondarMultiplo32(v int) int {
-	r := int(math.Round(float64(v)/32)) * 32
+	r := arredondarParaParPython(float64(v)/32) * 32
 	if r < 32 {
 		r = 32
 	}
 	return r
+}
+
+// arredondarParaParPython replica o round() nativo do Python: em caso de
+// empate exato (fracao == 0,5), vai para o inteiro par mais proximo
+// ("banker's rounding"), nao para longe de zero como math.Round do Go.
+//
+// A diferenca so aparece na fracao exatamente 0,5, mas foi exatamente isso
+// que uma imagem real pegou e nenhum teste sintetico tinha batido por
+// acaso: 528/32 = 16,5 exato. O PaddleOCR foi escrito em Python e usa o
+// round() dele -- para bater byte a byte com a referencia, a regra de
+// desempate precisa ser a mesma, nao "qualquer arredondamento razoavel".
+func arredondarParaParPython(v float64) int {
+	piso := math.Floor(v)
+	frac := v - piso
+	switch {
+	case frac < 0.5:
+		return int(piso)
+	case frac > 0.5:
+		return int(piso) + 1
+	default:
+		if int(piso)%2 == 0 {
+			return int(piso)
+		}
+		return int(piso) + 1
+	}
 }

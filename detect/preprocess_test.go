@@ -32,6 +32,16 @@ func TestTamanhoRedimensionado(t *testing.T) {
 
 		// 10x10, bem menor que 32: bate no minimo dos dois eixos.
 		{"minimo de 32", 10, 10, 960, 32, 32},
+
+		// 896x528, limite 960 -- a imagem real que revelou o bug de
+		// arredondamento: maior=896<960, ratio=1 (nao encolhe).
+		// h: 528/32 = 16,5 EXATO -- empate. Python (round() nativo, usado
+		// pelo PaddleOCR) desempata pro par mais proximo: 16, nao 17. Uma
+		// implementacao que arredonde "pra cima" no empate (a maioria das
+		// linguagens, inclusive math.Round do Go) erra aqui -- so uma
+		// imagem real bateu numa razao exatamente em 0,5, nenhum caso
+		// sintetico dos outros testes pegou isso por acaso.
+		{"empate exato em 0,5 (imagem real)", 896, 528, 960, 896, 512},
 	}
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
@@ -45,6 +55,33 @@ func TestTamanhoRedimensionado(t *testing.T) {
 				t.Errorf("(%d,%d) nao sao multiplos de 32", gotW, gotH)
 			}
 		})
+	}
+}
+
+// TestArredondarParaParPython confere o desempate contra valores conhecidos
+// do round() do Python: para de qualquer lado, e no empate exato vai pro
+// par mais proximo -- 16 (par) e 18 (par) ganham do vizinho impar, mesmo
+// quando o impar esta "mais perto de cima".
+func TestArredondarParaParPython(t *testing.T) {
+	casos := []struct {
+		v    float64
+		want int
+	}{
+		{16.5, 16}, // empate: 16 e par, ganha
+		{17.5, 18}, // empate: 18 e par, ganha
+		{18.5, 18}, // empate: 18 e par, ganha
+		{2.5, 2},
+		{3.5, 4},
+		{0.5, 0},
+		{-0.5, 0},  // -0 e par
+		{16.3, 16}, // sem empate: arredonda normal
+		{16.7, 17},
+		{16.0, 16}, // exato: nada pra desempatar
+	}
+	for _, c := range casos {
+		if got := arredondarParaParPython(c.v); got != c.want {
+			t.Errorf("arredondarParaParPython(%v) = %d, quero %d", c.v, got, c.want)
+		}
 	}
 }
 
