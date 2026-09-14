@@ -138,7 +138,24 @@ func reconhecerRegiao(src image.Image, regiao detect.Result, escala detect.Scale
 	var recorte image.Image
 	switch nivel {
 	case dewarp.N0, dewarp.N1:
-		recorte, err = recortarQuad(src, cantosDaLinha(linha), largura, altura)
+		// Cantos do retangulo que envolve a regiao inteira -- nao os 4
+		// pontos "de cima/baixo" da propria linha (uma versao anterior
+		// usava esses, via uma cantosDaLinha que foi removida): os pontos
+		// que sobram depois de descartar as pontas contaminadas (a mesma
+		// contaminacao corrigida em dewarp.ExtractBaseline) ficam alguns
+		// pixels para DENTRO das bordas verdadeiras da regiao. Usar esses
+		// pontos como canto da homografia mapeava o retangulo de saida
+		// inteiro para uma faixa mais estreita da origem, cortando o
+		// inicio/fim do texto -- um bug real, achado comparando o texto
+		// lido contra o documento de verdade (ver README). O retangulo
+		// envolvente nunca perde conteudo; o preco e nao corrigir a
+		// perspectiva de uma linha N1 com precisao (so inclui uma margem
+		// de fundo a mais nos cantos tortos), o que recog tolera bem.
+		cantos := [4]geom.Point{
+			{X: min.X, Y: min.Y}, {X: max.X, Y: min.Y},
+			{X: max.X, Y: max.Y}, {X: min.X, Y: max.Y},
+		}
+		recorte, err = recortarQuad(src, cantos, largura, altura)
 	case dewarp.N2:
 		acima := max.Y - min.Y
 		abaixo := acima * 0.15 // margem para descendentes -- ver RectifyLine
@@ -168,36 +185,6 @@ func reconhecerRegiao(src image.Image, regiao detect.Result, escala detect.Scale
 		return nil, "", 0, false
 	}
 	return linha, resultados[0].Texto, resultados[0].Confianca, true
-}
-
-// cantosDaLinha devolve os 4 cantos (superior-esquerdo, superior-direito,
-// inferior-direito, inferior-esquerdo -- a ordem que geom.RemapHomography
-// espera) de uma regiao ja no formato cima/baixo de detect.ToLinePolygon.
-//
-// Os vertices das PONTAS de cima e de baixo (indice 0 e o ultimo de cada
-// metade) nao servem de canto quando vem de um contorno denso: ToLinePolygon
-// corta o mesmo laco em dois arcos que comecam e terminam EXATAMENTE no
-// mesmo par de vertices (o vertice mais a esquerda e o mais a direita do
-// contorno inteiro) -- e esses dois vertices compartilhados ficam perto do
-// MEIO da altura da regiao, nao no topo nem na base (a mesma observacao
-// que motivou o ajuste em dewarp.ExtractBaseline, aqui aplicada tambem a
-// borda de cima, que ExtractBaseline nao usa). Descartar os dois antes de
-// pegar o primeiro/ultimo ponto de cada borda da o canto de verdade.
-//
-// Um quadrilatero simples (4 vertices, sem esse compartilhamento) cai no
-// mesmo esquema sem precisar de ajuste: cima e baixo ja sao exatamente os
-// 2 cantos de cada lado.
-func cantosDaLinha(linha geom.Polygon) [4]geom.Point {
-	metade := len(linha) / 2
-	cima := linha[:metade]
-	baixo := linha[metade:]
-
-	if metade >= 4 && cima[metade-1] == baixo[0] && baixo[metade-1] == cima[0] {
-		cima = cima[1 : metade-1]
-		baixo = baixo[1 : metade-1]
-	}
-
-	return [4]geom.Point{cima[0], cima[len(cima)-1], baixo[0], baixo[len(baixo)-1]}
 }
 
 func arredondaPositivo(v float64) int {

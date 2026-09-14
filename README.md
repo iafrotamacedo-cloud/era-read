@@ -140,7 +140,7 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 | 4 | `dewarp` | medidor de deformação (decide N0/N1/N2/N3 a partir dos polígonos), retificação por linha de N2 — e N3 depois | **pronto** (N3 fica para quando entrar rede) |
 | 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | **funcionando** — pré-processamento de linha, grafo e decodificação CTC validados com linha de texto real de documento da Frota Macedo (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais" abaixo) |
 | 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; colunas e tabela faltam |
-| — | `read` | liga `detect`+`dewarp`+`recog`+`layout` numa passagem só: página inteira → linhas de texto | **funcionando** — roda de ponta a ponta nos dois documentos reais da Frota Macedo já usados nas fases 3 e 5 (ver "`read`: a página inteira, de ponta a ponta" abaixo); qualidade do texto ainda precisa de ajuste fino (perde espaço entre palavras dentro de uma região detectada como uma só, alguns recortes cortam a borda do texto) |
+| — | `read` | liga `detect`+`dewarp`+`recog`+`layout` numa passagem só: página inteira → linhas de texto | **funcionando** — roda de ponta a ponta nos dois documentos reais da Frota Macedo já usados nas fases 3 e 5, com texto corretamente legível depois de dois bugs de integração achados e corrigidos (ver "`read`: a página inteira, de ponta a ponta" abaixo); resta um defeito conhecido (espaço perdido dentro de região detectada como uma peça só) |
 | 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; ligar aos campos de cada tipo de documento falta |
 
 A fase 4 (`dewarp`) foi adiantada fora de ordem porque só depende de
@@ -651,50 +651,77 @@ resto do pipeline de verdade.
 
 Corrigido em `dewarp.ExtractBaseline`: quando a borda de cima e a de baixo
 compartilham os vértices das pontas (a assinatura desse corte em dois
-arcos), os dois são descartados antes de virar baseline. Um quadrilátero
-simples de 4 vértices (sem esse compartilhamento) não é afetado -- a
-checagem só dispara para o caso de contorno denso, e a mesma lógica foi
-replicada em `read.cantosDaLinha` para os 4 cantos usados na retificação
-por homografia (N0/N1), que tinham o mesmo problema pela mesma razão.
-Testes antigos de `dewarp` continuam passando sem mudança; o teste novo
-que capturou o bug (`TestProcessarRegioesFiacaoCompleta`) só passou depois
-do conserto.
+arcos), os dois são descartados antes de virar baseline -- só para medir a
+deformação. Um quadrilátero simples de 4 vértices (sem esse
+compartilhamento) não é afetado; a checagem só dispara para o caso de
+contorno denso. Testes antigos de `dewarp` continuam passando sem mudança;
+o teste novo que capturou o bug (`TestProcessarRegioesFiacaoCompleta`) só
+passou depois do conserto.
+
+### Segundo bug, achado só ao ler um documento de verdade de ponta a ponta
+
+Com o primeiro conserto, a página inteira já classificava certo (N0), mas
+o texto lido saía cortado no início ou no fim -- `"AENTOAUXILIARDEVENDA-F"`
+em vez de `"DOCUMENTO AUXILIAR DE VENDA-PEDIDO"`. Um teste sintético com
+uma região só não pegaria isso: o recorte saía com a FORMA certa (a
+proporção largura/altura não parecia errada), só que amostrando o pedaço
+errado da imagem original.
+
+Causa: para retificar por homografia (N0/N1), o código pegava os 4
+"cantos" do jeito mais óbvio -- os mesmos pontos que sobram depois de
+descartar as pontas contaminadas do primeiro bug. Mas esses pontos que
+sobram já não são as bordas verdadeiras da região: ficam alguns pixels
+para DENTRO da extensão real (a reamostragem de `ToLinePolygon` anda por
+índice, não por posição, então o primeiro ponto que sobra depois de
+descartar a ponta contaminada já avançou uma fração real do contorno).
+Usar esses pontos como canto da homografia mapeava o retângulo de saída
+inteiro para essa faixa mais estreita -- esticando-a para preencher o
+recorte, e cortando fora o pedaço de fora dela. Os pontos são ótimos para
+medir a deformação (o que motivou descartá-los no primeiro bug) e ruins
+para definir a área do recorte -- dois usos diferentes do mesmo dado, que
+o código tratava como se fossem o mesmo problema.
+
+Corrigido usando o retângulo envolvente da região inteira (`Polygon.Bounds`)
+como cantos do recorte, em vez dos pontos "de cima/baixo" -- nunca perde
+conteúdo, ao custo de não corrigir a perspectiva de uma linha N1 com
+precisão cirúrgica (o recorte de uma linha tortinha inclui uma margem de
+fundo a mais nos cantos, em vez de desentortar exatamente). `recog` tolera
+bem essa margem extra; não tolera texto cortado.
 
 ### Rodado nos dois documentos reais da Frota Macedo
 
 Com os dois modelos reais (`ch_PP-OCRv4_det` + `latin_PP-OCRv3_mobile_rec`)
 e o mesmo dicionário da fase 5, `read.Page` nos dois documentos já usados
-nas fases 3 e 5:
+nas fases 3 e 5, depois dos dois consertos acima:
 
 | Documento | Linhas lidas | Amostra |
 |---|---|---|
-| PDF em alta resolução (`CCF08092026.pdf`) | 28 | `"RODRIGUES MATERIAL DE CONSTRUCOESLTDA-ME (RO J: 14788633000"`, `"00001210 - CAP ESG PVC 40MM TIC Nalor Tot"` |
-| Print de tela (`nota_whatsapp_crop.png`) | 22 | `"ROTAMACEDOENGENHARIAEIRELICOOOOOOOO"`, `"idade ORTALEZ fone:85989280"` |
+| PDF em alta resolução (`CCF08092026.pdf`) | 28 | `"DOCUMENTO AUXILIAR DE VENDA - PEDIDO"`, `"Nome: FROTA MACEDO ENGENHARIA EIRELI (000000000000035) CPF/CNPJ: 27363223000170"` |
+| Print de tela (`nota_whatsapp_crop.png`) | 22 | `"DOCUMENTO AUXILIAR DE VENDA-PEDIDO"`, `"N° do Documento:0000018355"` |
 
-O texto sai reconhecível -- nomes, CNPJ, valores, itens da tabela -- mas
-com dois defeitos visíveis, os dois honestos de nomear em vez de esconder:
+Cabeçalho, razão social, CNPJ, endereço e a maioria dos itens da tabela
+saem certos ou quase certos (erros pontuais de caractere -- "Razäo" em vez
+de "Razão", "FR0TA" com zero em vez de "O" -- do reconhecedor, não do
+recorte). Um defeito continua conhecido e não escondido:
 
 - **Espaço entre palavras se perde dentro de uma região.** Quando o
-  detector marca um campo inteiro ("RAZÃO SOCIAL: RODRIGUES...") como UMA
-  região em vez de uma por palavra, o reconhecedor devolve tudo colado --
-  ele não foi treinado para inserir espaço onde não há certeza alta de um
-  caractere de espaço de verdade. `layout.GroupLines` já junta várias
-  regiões com espaço quando elas chegam separadas; não tem como inserir
-  o que nunca existiu como região distinta.
-- **Recorte corta a borda do texto em algumas regiões**, perdendo a
-  primeira letra ou palavra (visível em `"AENTOAUXILIARDEVENDA-F"`, que
-  devia começar com "DOCUM"). A margem que `Unclip` acrescenta em volta de
-  cada região (fase 3) nem sempre é suficiente para o recorte de
-  `read.cantosDaLinha` -- ajustar isso é calibração fina de margem, não um
-  problema de fiação.
+  detector marca um campo inteiro como UMA região em vez de uma por
+  palavra (comum em campos curtos, como `"Nome:FR0TA MACEDO..."` sem
+  espaço depois de "Nome:"), o reconhecedor devolve tudo colado -- ele não
+  foi treinado para inserir espaço onde não há um caractere de espaço de
+  verdade visível. `layout.GroupLines` já junta várias regiões com espaço
+  quando elas chegam separadas; não tem como inserir o que nunca existiu
+  como região distinta. A linha do item "SERVICO DE ENTREGA" (a mesma que
+  a fase 3 já tinha marcado como limite de resolução) continua saindo
+  ilegível pelo mesmo motivo de sempre -- resolução baixa na fonte.
 
 **O que isso prova, e o que não prova:** as quatro fases já prontas
 (detecção, retificação, reconhecimento, layout) se conectam e produzem
-texto legível de um documento real de ponta a ponta -- o marco que o
-README já registrava como "o marco real" da fase 5. Não prova qualidade
-de produção: os dois defeitos acima são conhecidos, não escondidos, e
-ficam para quando alguém precisar de texto exato em vez de "dá para
-entender o que diz".
+texto **corretamente legível** de um documento real de ponta a ponta -- o
+marco que o README já registrava como "o marco real" da fase 5. Não prova
+qualidade de produção: o defeito de espaço acima é conhecido, e erros
+pontuais de caractere em campos de baixa resolução continuam acontecendo,
+os dois documentados em vez de escondidos.
 
 ## Escolhas de modelo
 
@@ -761,12 +788,14 @@ dois caracteres, no mesmo tipo de limite de resolução baixa já documentado
 na fase 3 (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais"
 acima). O pacote `read` liga detecção, retificação, reconhecimento e
 layout numa passagem só e roda de ponta a ponta nos dois documentos reais
-da Frota Macedo -- 28 e 22 linhas de texto legível, com dois defeitos
-conhecidos (espaço perdido dentro de região detectada como uma peça só,
-recorte cortando a borda em algumas regiões) e um bug real de integração
-achado e corrigido no processo (`dewarp.ExtractBaseline` classificava
-linha reta como N3 -- ver "`read`: a página inteira, de ponta a ponta"
-acima).
+da Frota Macedo -- 28 e 22 linhas de texto corretamente legível
+("DOCUMENTO AUXILIAR DE VENDA - PEDIDO", CNPJ, endereço, itens da tabela),
+depois de dois bugs de integração achados e corrigidos no processo
+(`dewarp.ExtractBaseline` classificava linha reta como N3; o recorte para
+reconhecimento usava pontos que cortavam o início/fim do texto -- ver
+"`read`: a página inteira, de ponta a ponta" acima). Resta um defeito
+conhecido: espaço perdido dentro de uma região que o detector marcou como
+uma peça só.
 
 ## Licença
 
