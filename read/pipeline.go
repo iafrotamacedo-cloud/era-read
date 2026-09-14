@@ -34,16 +34,40 @@ type Options struct {
 	// de uma região detectada é reamostrada antes de medir a deformação e
 	// (se for N2) ajustar a curva -- ver detect.ToLinePolygon.
 	PontosPorBorda int
+
+	// FatorDeformacaoRelativo escala Thresholds.RetoPx/CurvoPx pela altura
+	// de CADA região, em vez de usar só o valor absoluto de Thresholds --
+	// o maior dos dois vale (nunca fica mais apertado que o absoluto).
+	//
+	// Achado num documento real: um campo curto (um valor monetário de 6
+	// caracteres, ~30px de altura) tem ruído geométrico de contorno da
+	// mesma ordem de grandeza absoluta que uma linha de texto inteira --
+	// alguns pixels -- mas esses mesmos pixels são uma fração muito maior
+	// da altura de um campo pequeno. Com só o limiar absoluto (1,5px),
+	// dois valores de "Total a pagar:" de um documento real, perfeitamente
+	// retos, saíam classificados N3 (curvatura irregular) e eram
+	// descartados inteiros -- N3 ainda não tem implementação. Relativo à
+	// altura, o mesmo campo passa; uma linha de texto normal (bem mais
+	// alta) ganha uma folga maior em pixels absolutos, mas segue
+	// proporcional ao próprio tamanho.
+	//
+	// Não é calibração medida contra curvatura de verdade -- os dois
+	// documentos reais que validam isto são de papel liso, nenhum com
+	// dobra ou curvatura de fato para testar se o limiar mais largo deixa
+	// passar uma curva que devia ser N3. Ponto de partida, como
+	// dewarp.DefaultThresholds já se declara.
+	FatorDeformacaoRelativo float64
 }
 
 // DefaultOptions combina os padrões que cada fase já define sozinha.
 func DefaultOptions() Options {
 	return Options{
-		Detector:       detect.DefaultOptions(),
-		PreDetect:      detect.DefaultPreprocessOptions(),
-		PreRecog:       recog.DefaultPreprocessOptions(),
-		Thresholds:     dewarp.DefaultThresholds(),
-		PontosPorBorda: 8,
+		Detector:                detect.DefaultOptions(),
+		PreDetect:               detect.DefaultPreprocessOptions(),
+		PreRecog:                recog.DefaultPreprocessOptions(),
+		Thresholds:              dewarp.DefaultThresholds(),
+		PontosPorBorda:          8,
+		FatorDeformacaoRelativo: 0.3,
 	}
 }
 
@@ -129,11 +153,13 @@ func reconhecerRegiao(src image.Image, regiao detect.Result, escala detect.Scale
 	if err != nil {
 		return nil, "", 0, false
 	}
-	nivel := dewarp.Classify(forma, opts.Thresholds)
 
 	min, max := linha.Bounds()
 	largura := arredondaPositivo(max.X - min.X)
 	altura := arredondaPositivo(max.Y - min.Y)
+
+	th := limiaresEfetivos(opts.Thresholds, max.Y-min.Y, opts.FatorDeformacaoRelativo)
+	nivel := dewarp.Classify(forma, th)
 
 	var recorte image.Image
 	switch nivel {
@@ -185,6 +211,20 @@ func reconhecerRegiao(src image.Image, regiao detect.Result, escala detect.Scale
 		return nil, "", 0, false
 	}
 	return linha, resultados[0].Texto, resultados[0].Confianca, true
+}
+
+// limiaresEfetivos escala RetoPx/CurvoPx pela altura da regiao (ver o
+// comentario de Options.FatorDeformacaoRelativo) -- o maior entre o
+// absoluto de base e o relativo vale, nunca o menor: uma regiao muito
+// pequena SO fica mais tolerante, nunca mais apertada que o padrao.
+func limiaresEfetivos(base dewarp.Thresholds, altura, fator float64) dewarp.Thresholds {
+	if r := altura * fator; r > base.RetoPx {
+		base.RetoPx = r
+	}
+	if r := altura * fator; r > base.CurvoPx {
+		base.CurvoPx = r
+	}
+	return base
 }
 
 func arredondaPositivo(v float64) int {

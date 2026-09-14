@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/iafrotamacedo-cloud/era-read/detect"
+	"github.com/iafrotamacedo-cloud/era-read/dewarp"
 	"github.com/iafrotamacedo-cloud/era-read/geom"
 	"github.com/iafrotamacedo-cloud/era-read/graph"
 	"github.com/iafrotamacedo-cloud/era-read/imgproc"
@@ -218,6 +219,75 @@ func TestProcessarRegioesDescartaRegiaoDegenerada(t *testing.T) {
 	}
 	if len(linhas) != 1 || linhas[0].Text() != "X Y" {
 		t.Fatalf("a regiao degenerada deveria so ser ignorada, tem %v", linhas)
+	}
+}
+
+// TestLimiaresEfetivos cobre o bug real achado num documento real: um
+// campo curto (um valor monetario de poucos caracteres, ~30px de altura)
+// tem ruido geometrico de contorno da mesma ordem de grandeza ABSOLUTA
+// que uma linha de texto inteira -- alguns pixels -- mas esses pixels sao
+// uma fracao muito maior da altura de um campo pequeno. Dois valores
+// reais de "Total a pagar:" (~30px de altura, LinearBow medido de 7,09 e
+// 4,03px) saiam classificados N3 com o limiar absoluto de
+// dewarp.DefaultThresholds (1,5px) e eram descartados inteiros -- N3
+// ainda nao tem implementacao.
+func TestLimiaresEfetivos(t *testing.T) {
+	base := dewarp.DefaultThresholds() // RetoPx=1.5, CurvoPx=1.5
+
+	t.Run("regiao pequena real: LinearBow que era N3 vira folga suficiente", func(t *testing.T) {
+		got := limiaresEfetivos(base, 30, 0.3) // altura ~30px, o caso real medido
+		if got.RetoPx < 7.09 {
+			t.Errorf("RetoPx = %v, precisa ser >= 7.09 para aceitar o caso real medido", got.RetoPx)
+		}
+		if got.CurvoPx < 7.09 {
+			t.Errorf("CurvoPx = %v, precisa ser >= 7.09", got.CurvoPx)
+		}
+	})
+
+	t.Run("nunca fica mais apertado que o absoluto", func(t *testing.T) {
+		got := limiaresEfetivos(base, 1, 0.3) // altura minuscula: 1*0.3=0.3 < 1.5
+		if got.RetoPx != base.RetoPx || got.CurvoPx != base.CurvoPx {
+			t.Errorf("limiares = %+v, quero o absoluto de base (%+v) intacto", got, base)
+		}
+	})
+
+	t.Run("fator zero desliga o ajuste", func(t *testing.T) {
+		got := limiaresEfetivos(base, 1000, 0)
+		if got.RetoPx != base.RetoPx || got.CurvoPx != base.CurvoPx {
+			t.Errorf("limiares = %+v, quero o absoluto de base (%+v) sem ajuste", got, base)
+		}
+	})
+
+	t.Run("AnguloRad nao muda", func(t *testing.T) {
+		got := limiaresEfetivos(base, 30, 0.3)
+		if got.AnguloRad != base.AnguloRad {
+			t.Errorf("AnguloRad = %v, nao deveria mudar (so RetoPx/CurvoPx escalam)", got.AnguloRad)
+		}
+	})
+}
+
+// TestReconhecerRegiaoCampoPequeno confere, de ponta a ponta, que uma
+// regiao pequena e reta (a mesma ordem de grandeza do "100,60" real que
+// motivou o ajuste) e reconhecida com as opcoes padrao.
+func TestReconhecerRegiaoCampoPequeno(t *testing.T) {
+	const w, h = 900, 80
+	pagina := imagemDeFundo(w, h)
+	prob := imgproc.NewGray(w, h)
+
+	preencherCapsulaCor(pagina, 400, 28, 470, 52, color.NRGBA{255, 255, 255, 255})
+	preencherCapsulaProb(prob, 400, 28, 470, 52, 1.0)
+
+	regioes := detect.Detect(prob, detect.DefaultOptions())
+	if len(regioes) != 1 {
+		t.Fatalf("detect.Detect achou %d regioes, quero 1 (fixture do teste errada?)", len(regioes))
+	}
+
+	recGraph := redeReconhecimentoDeBrinquedo(t)
+	cs := recog.NewCharset([]string{"X", "Y"})
+
+	_, texto, _, ok := reconhecerRegiao(pagina, regioes[0], detect.Scale{X: 1, Y: 1}, recGraph, cs, DefaultOptions())
+	if !ok || texto == "" {
+		t.Errorf("regiao pequena e reta deveria ser reconhecida (ok=%v texto=%q)", ok, texto)
 	}
 }
 

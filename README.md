@@ -139,9 +139,9 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 | 3 | `detect` | DBNet + contornos + expansão de polígono | **funcionando** — validado com imagem real contra o ONNX Runtime (99,999% de similaridade) e testado em dois documentos reais da Frota Macedo (102 e 60 regiões, ver "Testado em documento real" abaixo) |
 | 4 | `dewarp` | medidor de deformação (decide N0/N1/N2/N3 a partir dos polígonos), retificação por linha de N2 — e N3 depois | **pronto** (N3 fica para quando entrar rede) |
 | 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | **funcionando** — pré-processamento de linha, grafo e decodificação CTC validados com linha de texto real de documento da Frota Macedo (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais" abaixo) |
-| 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; campos dentro de uma linha por espaçamento horizontal (`SplitCells`) **pronto**, validado nos dois documentos reais (ver "`SplitCells`: separar campo por espaçamento" abaixo); falta alinhar células de linhas diferentes na mesma coluna (a tabela de verdade) |
-| — | `read` | liga `detect`+`dewarp`+`recog`+`layout` numa passagem só: página inteira → linhas de texto | **funcionando** — roda de ponta a ponta nos dois documentos reais da Frota Macedo já usados nas fases 3 e 5, com texto corretamente legível depois de dois bugs de integração achados e corrigidos (ver "`read`: a página inteira, de ponta a ponta" abaixo); resta um defeito conhecido (espaço perdido dentro de região detectada como uma peça só) |
-| 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; `read.ExtrairCampos` liga isso à saída de `read.Page` e valida nos dois documentos reais (ver "`ExtrairCampos`: do texto lido ao dado tipado" abaixo); falta um schema por tipo de documento (hoje é "ache o que aparecer", não "o campo X deste tipo de nota") |
+| 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; campo dentro de uma linha por espaçamento (`SplitCells`) **pronto**, validado nos dois documentos reais; colunas entre várias linhas (`GroupTable`) **implementado e testado** para grade limpa, mas não segmenta os itens dos dois documentos reais (ver "`GroupTable`: colunas entre linhas" abaixo) |
+| — | `read` | liga `detect`+`dewarp`+`recog`+`layout` numa passagem só: página inteira → linhas de texto | **funcionando** — roda de ponta a ponta nos dois documentos reais da Frota Macedo já usados nas fases 3 e 5, com texto corretamente legível depois de três bugs de integração achados e corrigidos (ver "`read`: a página inteira" e "Terceiro bug" abaixo); resta um defeito conhecido (espaço perdido dentro de região detectada como uma peça só, a mesma causa que atrapalha `GroupTable`) |
+| 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; `read.ExtrairCampos` (achados livres) e `read.ExtrairDAV` (schema da DAV: emitente, destinatário, número, data, totais, itens) ligam isso à saída de `read.Page`, validados no PDF em alta resolução com emitente/destinatário/número/data/total todos corretos (ver "`ExtrairCampos` e `ExtrairDAV`" abaixo); falta tabela de itens estruturada e schema para outros tipos de documento |
 
 A fase 4 (`dewarp`) foi adiantada fora de ordem porque só depende de
 `geom` — não de rede nem de decisão pendente. `geom.RemapCurve` amostra uma
@@ -750,15 +750,78 @@ lado, telefone do outro:
 Onde não ajuda: linhas onde o próprio reconhecimento já saiu embaralhado
 (a área de totais, `"OEOPOOAC 100,60 Valor Produtos: 100,60"`) continuam
 embaralhadas depois de cortadas em células -- `SplitCells` separa por
-geometria, não conserta caractere errado. E o que `SplitCells`
-deliberadamente não tenta: alinhar células de LINHAS diferentes na mesma
-coluna (a tabela de verdade, onde a segunda célula de toda linha de item
-forma a coluna "quantidade") -- calibrar esse alinhamento sem mais
-documentos reais rotulados à mão para testar contra seria chutar um
-número, o mesmo motivo que atrasou até aqui até este trabalho ter dado o
-primeiro documento real para medir contra.
+geometria, não conserta caractere errado.
 
-## `ExtrairCampos`: do texto lido ao dado tipado -- 14/09/2026
+## Terceiro bug: campo pequeno virava N3 -- 14/09/2026
+
+Investigando por que `"Total a pagar:"` nunca vinha com o valor ao lado
+(o texto reconhecido trazia só o rótulo, a linha toda), o rastro levou a
+`dewarp.Classify`, não a `layout`: as duas regiões com o valor
+(`"100,60"` e `"+0,00"`, ~30px de altura) **foram detectadas** com
+confiança alta (0,996 e 0,999) -- só que classificadas **N3** (curvatura
+irregular), que `read.reconhecerRegiao` descarta inteiro por não ter
+implementação ainda.
+
+Causa: `dewarp.Thresholds.RetoPx`/`CurvoPx` são limiares em **pixel
+absoluto** (1,5px, "ponto de partida", nunca calibrado contra documento
+real). Um campo curto (`"100,60"`, 6 caracteres) tem ruído de contorno da
+mesma ordem de grandeza ABSOLUTA que uma linha de texto inteira -- alguns
+pixels, do jeito que `Unclip` e a rasterização do detector sempre deixam
+-- mas esses mesmos pixels são uma fração bem maior da altura de um campo
+pequeno. As duas regiões reais mediram `LinearBow` de 7,09px e 4,03px,
+folgadamente acima do limiar fixo de 1,5px.
+
+Corrigido em `read.Options.FatorDeformacaoRelativo` (padrão 0,3): antes de
+classificar, o limiar vira `max(limiar absoluto, altura da região × 0,3)`
+-- um campo de 30px de altura ganha ~9px de folga, uma linha de texto
+normal (bem mais alta) ganha proporcionalmente mais, sem nunca ficar mais
+apertado que o padrão absoluto. `dewarp.Thresholds` em si não mudou --
+o ajuste mora na camada de integração (`read`), que é quem sabe o
+tamanho de cada região.
+
+Não é calibração medida contra curvatura de verdade: os dois documentos
+reais usados aqui são de papel liso, nenhum tem dobra ou curvatura de
+fato para testar se o limiar mais largo deixa passar uma curva que devia
+ser N3. Ponto de partida, como o próprio `dewarp.DefaultThresholds` já se
+declarava -- agora com um caso real medido por trás do número, não só um
+palpite.
+
+## `GroupTable`: colunas entre linhas -- 14/09/2026
+
+`SplitCells` corta uma linha em campos; `layout.GroupTable` tenta ir além,
+alinhando células de VÁRIAS linhas na mesma coluna -- juntando os
+intervalos horizontais que se sobrepõem entre linhas, num só passo
+(célula de uma linha estende a coluna aberta mais recente se a borda
+esquerda cair dentro dela; senão abre coluna nova). Testado com grades
+sintéticas limpas: linhas com o mesmo número de células nas mesmas
+posições viram colunas certas; uma linha com menos células que as outras
+deixa a célula que falta vazia, não deslocada; uma coluna cuja largura
+varia um pouco de linha para linha (texto mais longo numa, mais curto
+noutra) continua alinhada, desde que as faixas se sobreponham.
+
+Rodado nos itens da tabela dos dois documentos reais: **não segmentou em
+colunas** -- as 13 (e 3) linhas da área de itens caíram todas numa coluna
+só. Causa, medida, não hipótese: o algoritmo de fundir intervalos
+sobrepostos quebra quando UMA linha tem uma célula muito mais larga que
+as outras e essa célula sozinha cobre a faixa horizontal de duas colunas
+"de verdade" -- ela vira uma ponte que funde as duas em uma só. É
+exatamente o formato dos itens destes documentos: a linha do
+código+descrição do produto é bem mais larga que a faixa de quantidade
+sozinha, e como código+descrição e quantidade/preço acabam em **linhas
+diferentes** (o mesmo item físico vira 2 ou mais `Line`s, uma limitação
+de `GroupLines` ainda não resolvida -- ver "espaço perdido" acima, prima
+deste problema), a largura desencontrada entre elas funde tudo.
+
+**O que isso prova, e o que não prova:** o algoritmo de `GroupTable` está
+certo para o caso que ele promete -- grade limpa, testada e comprovada.
+Não prova que "colunas e tabela" (fase 6) está fechada para documento
+real: falta tratar célula desproporcionalmente larga como sinal para NÃO
+fundir, e isso só vale a pena calibrar depois que o item físico virar uma
+`Line` só (hoje seria consertar o sintoma, não a causa). Registrado como
+limitação medida, não escondida atrás de um teste sintético que não
+prova nada sobre o caso real.
+
+## `ExtrairCampos` e `ExtrairDAV`: do texto lido ao dado tipado -- 14/09/2026
 
 Com `read.Page` produzindo texto legível, faltava a última cola: rodar
 `extract` (fase 7, já pronta) em cima da saída, sem precisar saber a
@@ -775,44 +838,54 @@ estrutura do documento. `read.ExtrairCampos` varre as linhas e devolve:
   `extract.ParseMoney` explicitamente recusa ser buscador de texto livre
   (colidiria com quantidade, número de nota, CEP).
 
-Rodado no PDF em alta resolução (a fase 3 já tinha achado que este
-documento tem a melhor qualidade de leitura):
+`read.ExtrairDAV` vai além: um schema ESPECÍFICO da "Documento Auxiliar de
+Venda" que os dois documentos reais são, não um parser universal de nota
+fiscal. Reconhece emitente (razão social + CNPJ), destinatário (nome +
+CNPJ/CPF), número do documento, data de emissão, os mesmos totais de
+`ExtrairCampos`, e monta a tabela de itens via `GroupTable`.
+
+Rodado no PDF em alta resolução, depois do conserto do terceiro bug:
 
 ```
 CNPJs:   [14.788.633/0001-10 27.363.223/0001-70]
-CPFs:    []
-Datas:   [2026-08-18 2026-08-18]  -- Dt. Prev e Dt. Emis, a mesma data nas duas
-Valores: {Valor Produtos: R$ 100,60}
+Datas:   [2026-08-18]
+Valores: {Total a pagar: R$ 100,60, Valor Produtos: R$ 100,60}
+
+Emitente:     {RODRIGUES MATERIAL DE CONSTRUCOES LTDA-ME (RODRIGUES C1, 14.788.633/0001-10}
+Destinatario: {FROTA MACEDO ENGENHARIA EIRELI (000000000000035), 27.363.223/0001-70}
+NumeroDocumento: 0000019185
+DataEmissao:     2026-08-18
+Totais:          {Total a pagar: R$ 100,60, Valor Produtos: R$ 100,60}
 ```
 
-Os dois CNPJs (emitente e destinatário) saem certos e formatados. A data
-sai duplicada porque duas etiquetas diferentes ("Dt. Prev:" e "Dt. Emis:")
-caíram na mesma data neste documento -- `ExtrairCampos` não teve como
-saber que eram a mesma coisa, e não deveria adivinhar. Só um dos três
-valores monetários esperados foi achado: "Total a pagar" não tinha o
-número na mesma linha que o rótulo no texto reconhecido (a região com o
-valor não foi agrupada ali por `layout.GroupLines`) -- o mesmo tipo de
-limite que motivou `SplitCells`, mas entre linhas diferentes, não dentro
-de uma linha só, e por isso ainda não resolvido.
+`"Total a pagar"` -- o valor que faltava antes do terceiro bug ser
+corrigido -- agora aparece, certo, nos dois campos que o procuram
+(`ExtrairCampos` e `ExtrairDAV.Totais`). Emitente, destinatário, número
+do documento e data saem todos corretos e completos.
 
-No print de tela (resolução mais baixa, fase 3 já registrada como pior):
-achou o CNPJ do emitente, mas não o CPF/CNPJ do destinatário -- aquela
-região saiu detectada com uma caixa de ~5px de altura (contra os ~20px
-normais das outras linhas), pequena demais para o reconhecedor ler
-qualquer coisa. Registrado, não escondido: é uma falha de detecção
-específica desse campo nessa imagem, não um bug em `ExtrairCampos`.
+No print de tela (resolução mais baixa, já registrada como pior desde a
+fase 3): achou o CNPJ e o nome do emitente, mas não o CPF/CNPJ do
+destinatário -- aquela região específica saiu detectada com uma caixa de
+~5px de altura (contra os ~20-30px normais), pequena demais para o
+reconhecedor ler qualquer coisa; nem o ajuste do terceiro bug (que é
+sobre CLASSIFICAR a deformação, não sobre reconhecer um recorte
+ilegível) resolve isso. `Valores`/`Totais` também saíram vazios neste
+documento -- o mesmo tipo de linha que, na versão em alta resolução, tem
+rótulo e valor juntos, aqui não trouxe o valor junto em nenhuma `Line`.
+Registrado, não escondido: é limite de detecção/resolução específico
+desta imagem, não bug em `ExtrairCampos`/`ExtrairDAV`.
 
 **O que isso prova, e o que não prova:** a cadeia inteira -- imagem →
-detecção → retificação → reconhecimento → layout → campo tipado -- fecha
-de ponta a ponta num documento real, produzindo o dado estruturado que o
-README define como o produto final do motor (`{fornecedor, cnpj,
-valores...}`, não texto corrido). Não prova extração completa nem
-confiável: falta o schema por tipo de documento (hoje é "ache CNPJ/CPF/
-data/valor onde aparecer", não "o campo X deste tipo de nota, na posição
-que ele sempre ocupa"), e os dois furos acima (data duplicada sem
-contexto de qual etiqueta, valor que não estava na mesma linha do rótulo)
-mostram exatamente onde a aposta de "regras e geometria" ainda precisa de
-mais trabalho antes de virar produto.
+detecção → retificação → reconhecimento → layout → campo tipado --
+fecha de ponta a ponta num documento real de alta resolução, produzindo o
+dado estruturado que o README define como o produto final do motor
+(`{fornecedor, cnpj, itens, total}`, não texto corrido), com emitente,
+destinatário, número, data e total todos corretos. Não prova extração
+confiável em qualquer resolução (o segundo documento mostra os mesmos
+limites de detecção já conhecidos desde a fase 3) nem tabela de itens
+estruturada (`GroupTable` não segmenta em colunas neste formato de
+linha, ver acima) -- os dois registrados como o que realmente falta antes
+de virar produto, não escondidos atrás de um resultado só do melhor caso.
 
 ## Escolhas de modelo
 
@@ -878,21 +951,25 @@ dois caracteres, no mesmo tipo de limite de resolução baixa já documentado
 na fase 3 (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais"
 acima). O pacote `read` liga detecção, retificação, reconhecimento e
 layout numa passagem só e roda de ponta a ponta nos dois documentos reais
-da Frota Macedo -- 28 e 22 linhas de texto corretamente legível
+da Frota Macedo -- 34 e 22 linhas de texto corretamente legível
 ("DOCUMENTO AUXILIAR DE VENDA - PEDIDO", CNPJ, endereço, itens da tabela),
-depois de dois bugs de integração achados e corrigidos no processo
+depois de três bugs de integração achados e corrigidos no processo
 (`dewarp.ExtractBaseline` classificava linha reta como N3; o recorte para
-reconhecimento usava pontos que cortavam o início/fim do texto -- ver
-"`read`: a página inteira, de ponta a ponta" acima). Resta um defeito
+reconhecimento usava pontos que cortavam o início/fim do texto; campo
+pequeno como um valor monetário curto também virava N3 por limiar de
+deformação em pixel absoluto, não relativo ao tamanho da região -- ver
+"`read`: a página inteira" e "Terceiro bug" acima). Resta um defeito
 conhecido: espaço perdido dentro de uma região que o detector marcou como
 uma peça só. `layout.SplitCells` separa campo por espaçamento horizontal
-dentro de uma linha (rótulo de um lado, valor do outro), validado nos dois
-documentos reais; falta alinhar células de linhas diferentes na mesma
-coluna (a tabela de verdade). `read.ExtrairCampos` liga `extract` à saída
-de `read.Page` e fecha o ciclo completo pela primeira vez num documento
-real -- achou os 2 CNPJs e um valor monetário no PDF em alta resolução;
-falta um schema por tipo de documento (ver "`SplitCells`" e
-"`ExtrairCampos`" acima).
+dentro de uma linha, validado nos dois documentos reais; `layout.GroupTable`
+alinha células de várias linhas em coluna, testado e correto para grade
+limpa, mas não segmenta os itens dos documentos reais (a mesma causa do
+defeito de espaço acima). `read.ExtrairCampos` e `read.ExtrairDAV` ligam
+`extract` à saída de `read.Page` e fecham o ciclo completo pela primeira
+vez num documento real -- emitente, destinatário, número do documento,
+data e total todos corretos no PDF em alta resolução; falta tabela de
+itens estruturada e schema para outros tipos de documento (ver
+"`SplitCells`", "`GroupTable`" e "`ExtrairCampos` e `ExtrairDAV`" acima).
 
 ## Licença
 
