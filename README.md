@@ -136,7 +136,7 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 |---|---|---|---|
 | 1 | `imgproc` | I/O, cinza, normalização de iluminação, amostragem bilinear | **pronto** |
 | 2 | `geom` | polígono, homografia (com `RemapHomography`, que já cobre a retificação de N1), ajuste de curva, remap | **pronto** |
-| 3 | `detect` | DBNet + contornos + expansão de polígono | — |
+| 3 | `detect` | DBNet + contornos + expansão de polígono | parcial — pós-processamento (contornos + expansão) **pronto**; falta o pré-processamento da imagem e a integração fim a fim com um `.onnx` real |
 | 4 | `dewarp` | medidor de deformação (decide N0/N1/N2/N3 a partir dos polígonos), retificação por linha de N2 — e N3 depois | **pronto** (N3 fica para quando entrar rede) |
 | 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | — |
 | 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; colunas e tabela faltam |
@@ -154,6 +154,40 @@ testar com polígono sintético; o teste com um detector de verdade
 alimentando ela fica para quando a fase 3 fechar. N3 (o caso que N2 não
 resolve — a compressão em profundidade perto da dobra) continua não
 implementado: precisa de rede.
+
+**`detect`** também avançou em parte: a metade que não é rede. A rede (o
+grafo do PP-OCRv4, ver "O motor de inferência" abaixo) devolve um mapa de
+probabilidade — um valor entre 0 e 1 por pixel, "isto é texto?" — porque é
+a única forma de a saída ter tamanho fixo não importando quantas palavras
+existam na imagem nem o formato de cada uma (reto ou curvo). Esse mapa
+ainda não é útil para recortar e ler; o pacote transforma ele em polígonos
+discretos:
+
+```
+mapa de probabilidade
+  -> Binarize    (corta num limiar: texto ou não)
+  -> label        (agrupa pixels vizinhos na mesma mancha, 8-conectado)
+  -> FindContours (traça o contorno de cada mancha, algoritmo de Moore)
+  -> RegionScore  (mede a confiança média de cada contorno)
+  -> filtra       (descarta mancha pequena ou de confiança baixa)
+  -> Unclip       (expande o contorno de volta ao tamanho real)
+```
+
+O DBNet é treinado para prever cada mancha um pouco *encolhida* — de
+propósito, para que duas palavras vizinhas não colem numa mancha só na
+binarização. `Unclip` desfaz isso, expandindo pela fórmula do paper
+(`distância = área × proporção ÷ perímetro`), empurrando cada vértice pela
+bissetriz das duas arestas que se encontram nele (o "miter join" clássico
+de desenho de contorno) — conferido com um caso exato (um quadrado cresce
+exatamente a distância certa em cada lado, sem aproximação).
+
+Falta um adaptador (`ToLinePolygon`) entre o contorno bruto (um vértice por
+pixel de borda, formato genérico) e o poligono que `dewarp.ExtractBaseline`
+espera (metade dos vértices formando a borda de cima esquerda→direita, a
+outra metade a de baixo direita→esquerda) — esse já existe. O que falta de
+verdade na fase 3: o pré-processamento da imagem de entrada (redimensionar,
+normalizar) e testar a cadeia inteira com uma imagem real, não só com a
+fiação confirmada contra ruído aleatório (ver "O motor de inferência").
 
 As fases 6 e 7 também foram adiantadas em parte, cada uma na fatia que não
 depende de reconhecimento nenhum:
@@ -184,8 +218,9 @@ específicos de cada tipo de documento — o que só faz sentido com a fase 5
 A Fase 5 é o marco real: fotografar um papel na mão e o texto sair certo.
 Antes disso é infraestrutura.
 
-As fases 1, 2, 4 e 6 são geometria e processamento de imagem — não tocam em
-rede nenhuma e não dependem de nada fora da biblioteca padrão.
+As fases 1, 2, 4 e 6, e o pós-processamento da fase 3, são geometria e
+processamento de imagem — não tocam em rede nenhuma e não dependem de nada
+fora da biblioteca padrão.
 
 ## O motor de inferência
 
@@ -318,12 +353,12 @@ go vet ./...
 ## Estado
 
 Fases 1, 2 e 4 prontas; fases 6 e 7 parciais (ver Roteiro). Fase 3
-(detecção) ainda não começou, mas o motor de inferência já está aqui dentro,
-independente, com as duas ops que faltavam implementadas e o grafo do
-candidato (`ch_PP-OCRv4_det_infer`, já baixado e conferido) montando e
-executando de ponta a ponta (ver "O motor de inferência" acima). Falta a
-implementação de verdade: pós-processamento do mapa de probabilidade em
-polígonos.
+(detecção) parcial: o motor de inferência está aqui dentro, independente,
+rodando o grafo do candidato (`ch_PP-OCRv4_det_infer`) de ponta a ponta; o
+pós-processamento (binariza, acha contorno, mede confiança, expande,
+adapta pro formato do `dewarp`) está pronto e testado (`detect/`). Falta o
+pré-processamento da imagem de entrada e o teste com imagem real, não só
+com ruído aleatório confirmando a fiação.
 
 ## Licença
 
