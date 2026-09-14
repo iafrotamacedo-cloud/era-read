@@ -1,0 +1,22 @@
+# binarios compilados
+*.exe
+*.dll
+*.so
+*.dylib
+
+# saidas de teste e perfil
+*.test
+*.out
+*.prof
+
+# pesos de modelo: nunca versionar
+*.onnx
+models/
+
+# rascunho de sessao
+.tmp-*/
+.tmp-*
+
+# ambiente
+.env
+.DS_Store
