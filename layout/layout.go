@@ -1,11 +1,16 @@
 // Package layout organiza palavras soltas (posicao + texto) em linhas de
-// texto, na ordem em que uma pessoa leria a pagina.
+// texto, na ordem em que uma pessoa leria a pagina, e cada linha em
+// campos (SplitCells) quando o espacamento horizontal denuncia mais de um
+// campo colado na mesma linha.
 //
 // So usa geometria -- a posicao das caixas -- nunca o conteudo do texto.
 // Isso cobre corretamente um bloco de texto de uma coluna so: a maioria
 // dos campos de uma nota fiscal, boleto ou ordem de compra (cabecalho,
-// dados do fornecedor, totais). Multi-coluna e tabela ficam fora por ora
-// -- ver a ressalva em GroupLines.
+// dados do fornecedor, totais, rotulo e valor lado a lado numa mesma
+// linha). O que ainda fica de fora: alinhar celulas de LINHAS diferentes
+// na mesma coluna -- a tabela de verdade, onde a segunda palavra de toda
+// linha de item forma a coluna "quantidade" -- ver a ressalva em
+// SplitCells.
 package layout
 
 import (

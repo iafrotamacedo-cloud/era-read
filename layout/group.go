@@ -24,14 +24,15 @@ const OverlapFraction = 0.5
 // uniforme; um titulo bem maior que o resto do paragrafo ao lado pode
 // abrir a propria linha mesmo estando geometricamente colado.
 //
-// SO cobre layout de uma coluna: duas palavras na mesma faixa vertical
-// caem na mesma linha mesmo que pertencam, na pagina de verdade, a colunas
-// diferentes lado a lado (um cabecalho "Item" e "Valor" de duas colunas
-// distintas, por exemplo). Separar coluna de linha por geometria pura
-// exige tambem olhar o espacamento horizontal entre blocos de texto -- e
-// esse limiar so da para calibrar direito contra documento real, que este
-// motor ainda nao tem (a fase 3, deteccao, nao existe). Fica de fora agora
-// em vez de arriscar um numero chutado; ver README.md.
+// SO agrupa por faixa vertical: duas palavras que pertencem, na pagina de
+// verdade, a colunas diferentes lado a lado (um rotulo "Total:" e o valor
+// numa coluna bem separada, por exemplo) caem na mesma Line se estiverem
+// na mesma altura -- GroupLines nao sabe que sao campos diferentes.
+// SplitCells (columns.go) resolve isso depois, cortando a Line de volta
+// em Cell por espacamento horizontal; separado em duas funcoes porque sao
+// duas perguntas diferentes ("que palavras formam esta linha" e "que
+// palavras formam este campo dentro da linha"), cada uma com o seu limiar
+// calibrado à parte.
 func GroupLines(words []Word) []Line {
 	if len(words) == 0 {
 		return nil

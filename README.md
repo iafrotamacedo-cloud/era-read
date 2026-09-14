@@ -139,9 +139,9 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 | 3 | `detect` | DBNet + contornos + expansão de polígono | **funcionando** — validado com imagem real contra o ONNX Runtime (99,999% de similaridade) e testado em dois documentos reais da Frota Macedo (102 e 60 regiões, ver "Testado em documento real" abaixo) |
 | 4 | `dewarp` | medidor de deformação (decide N0/N1/N2/N3 a partir dos polígonos), retificação por linha de N2 — e N3 depois | **pronto** (N3 fica para quando entrar rede) |
 | 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | **funcionando** — pré-processamento de linha, grafo e decodificação CTC validados com linha de texto real de documento da Frota Macedo (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais" abaixo) |
-| 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; colunas e tabela faltam |
+| 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | parcial — linhas e ordem de leitura de 1 coluna **prontas**; campos dentro de uma linha por espaçamento horizontal (`SplitCells`) **pronto**, validado nos dois documentos reais (ver "`SplitCells`: separar campo por espaçamento" abaixo); falta alinhar células de linhas diferentes na mesma coluna (a tabela de verdade) |
 | — | `read` | liga `detect`+`dewarp`+`recog`+`layout` numa passagem só: página inteira → linhas de texto | **funcionando** — roda de ponta a ponta nos dois documentos reais da Frota Macedo já usados nas fases 3 e 5, com texto corretamente legível depois de dois bugs de integração achados e corrigidos (ver "`read`: a página inteira, de ponta a ponta" abaixo); resta um defeito conhecido (espaço perdido dentro de região detectada como uma peça só) |
-| 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; ligar aos campos de cada tipo de documento falta |
+| 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; `read.ExtrairCampos` liga isso à saída de `read.Page` e valida nos dois documentos reais (ver "`ExtrairCampos`: do texto lido ao dado tipado" abaixo); falta um schema por tipo de documento (hoje é "ache o que aparecer", não "o campo X deste tipo de nota") |
 
 A fase 4 (`dewarp`) foi adiantada fora de ordem porque só depende de
 `geom` — não de rede nem de decisão pendente. `geom.RemapCurve` amostra uma
@@ -723,6 +723,97 @@ qualidade de produção: o defeito de espaço acima é conhecido, e erros
 pontuais de caractere em campos de baixa resolução continuam acontecendo,
 os dois documentados em vez de escondidos.
 
+## `SplitCells`: separar campo por espaçamento -- 14/09/2026
+
+`layout.GroupLines` junta palavras na mesma faixa vertical numa `Line` só
+-- e não sabe separar duas colunas lado a lado que caem na mesma altura
+(um rótulo e o valor numa tabela, por exemplo). `SplitCells` corta essa
+`Line` de volta em `Cell`s por espaçamento horizontal: um vão entre
+palavras maior que `DefaultGapFactor` (3×) a altura da própria linha
+conta como fronteira de coluna -- relativo à altura, não um número fixo de
+pixels, porque o mesmo documento em outra resolução muda todo espaçamento
+em pixels na mesma proporção que muda a altura da fonte.
+
+Rodado nos dois documentos reais da Frota Macedo (a saída de `read.Page`,
+depois dos consertos acima), separa limpo o caso comum -- código do
+produto de um lado, quantidade/preço do outro; rótulo de endereço de um
+lado, telefone do outro:
+
+```
+"00000000000442 - SERRA STARRETT 1218 1,000"
+  -> "00000000000442 - SERRA STARRETT 1218"  |  "1,000"
+
+"Fale Conosco: 85987111007 Dt. Emis: 18/08/2026"
+  -> "Fale Conosco: 85987111007"  |  "Dt. Emis: 18/08/2026"
+```
+
+Onde não ajuda: linhas onde o próprio reconhecimento já saiu embaralhado
+(a área de totais, `"OEOPOOAC 100,60 Valor Produtos: 100,60"`) continuam
+embaralhadas depois de cortadas em células -- `SplitCells` separa por
+geometria, não conserta caractere errado. E o que `SplitCells`
+deliberadamente não tenta: alinhar células de LINHAS diferentes na mesma
+coluna (a tabela de verdade, onde a segunda célula de toda linha de item
+forma a coluna "quantidade") -- calibrar esse alinhamento sem mais
+documentos reais rotulados à mão para testar contra seria chutar um
+número, o mesmo motivo que atrasou até aqui até este trabalho ter dado o
+primeiro documento real para medir contra.
+
+## `ExtrairCampos`: do texto lido ao dado tipado -- 14/09/2026
+
+Com `read.Page` produzindo texto legível, faltava a última cola: rodar
+`extract` (fase 7, já pronta) em cima da saída, sem precisar saber a
+estrutura do documento. `read.ExtrairCampos` varre as linhas e devolve:
+
+- **CNPJ e CPF**: `extract.FindCNPJs`/`FindCPFs` direto no texto de cada
+  linha -- confiança alta, porque o dígito verificador decide sozinho se
+  14 (ou 11) dígitos são coincidência ou CNPJ (CPF) de verdade.
+- **Data**: `extract.ParseDateBR` tentado em cada linha -- sem dígito
+  verificador, então só entra quando o formato bate exato (`DD/MM/AAAA`
+  ou por extenso), o que já filtra a maioria do ruído.
+- **Valor monetário**: só perto de uma etiqueta conhecida (`EtiquetasValor`
+  -- "Total a pagar", "Valor Produtos", "Total Bruto Produtos"), porque
+  `extract.ParseMoney` explicitamente recusa ser buscador de texto livre
+  (colidiria com quantidade, número de nota, CEP).
+
+Rodado no PDF em alta resolução (a fase 3 já tinha achado que este
+documento tem a melhor qualidade de leitura):
+
+```
+CNPJs:   [14.788.633/0001-10 27.363.223/0001-70]
+CPFs:    []
+Datas:   [2026-08-18 2026-08-18]  -- Dt. Prev e Dt. Emis, a mesma data nas duas
+Valores: {Valor Produtos: R$ 100,60}
+```
+
+Os dois CNPJs (emitente e destinatário) saem certos e formatados. A data
+sai duplicada porque duas etiquetas diferentes ("Dt. Prev:" e "Dt. Emis:")
+caíram na mesma data neste documento -- `ExtrairCampos` não teve como
+saber que eram a mesma coisa, e não deveria adivinhar. Só um dos três
+valores monetários esperados foi achado: "Total a pagar" não tinha o
+número na mesma linha que o rótulo no texto reconhecido (a região com o
+valor não foi agrupada ali por `layout.GroupLines`) -- o mesmo tipo de
+limite que motivou `SplitCells`, mas entre linhas diferentes, não dentro
+de uma linha só, e por isso ainda não resolvido.
+
+No print de tela (resolução mais baixa, fase 3 já registrada como pior):
+achou o CNPJ do emitente, mas não o CPF/CNPJ do destinatário -- aquela
+região saiu detectada com uma caixa de ~5px de altura (contra os ~20px
+normais das outras linhas), pequena demais para o reconhecedor ler
+qualquer coisa. Registrado, não escondido: é uma falha de detecção
+específica desse campo nessa imagem, não um bug em `ExtrairCampos`.
+
+**O que isso prova, e o que não prova:** a cadeia inteira -- imagem →
+detecção → retificação → reconhecimento → layout → campo tipado -- fecha
+de ponta a ponta num documento real, produzindo o dado estruturado que o
+README define como o produto final do motor (`{fornecedor, cnpj,
+valores...}`, não texto corrido). Não prova extração completa nem
+confiável: falta o schema por tipo de documento (hoje é "ache CNPJ/CPF/
+data/valor onde aparecer", não "o campo X deste tipo de nota, na posição
+que ele sempre ocupa"), e os dois furos acima (data duplicada sem
+contexto de qual etiqueta, valor que não estava na mesma linha do rótulo)
+mostram exatamente onde a aposta de "regras e geometria" ainda precisa de
+mais trabalho antes de virar produto.
+
 ## Escolhas de modelo
 
 **Detecção: DBNet, via PP-OCRv4 do PaddleOCR.** Pesquisado em 14/09/2026.
@@ -772,8 +863,7 @@ go vet ./...
 
 ## Estado
 
-Fases 1, 2, 3 e 4 prontas; fase 5 parcial; fases 6 e 7 parciais (ver
-Roteiro). A fase 3 (detecção) está validada contra imagem real e o ONNX
+Fases 1, 2, 3 e 4 prontas; fases 5, 6 e 7 parciais (ver Roteiro). A fase 3 (detecção) está validada contra imagem real e o ONNX
 Runtime — 99,999% de similaridade de cosseno, 33 regiões de texto
 encontradas corretamente numa foto de verdade (`ch_PP-OCRv4_det_infer`, ver
 "Validado contra o ONNX Runtime" acima) — e testada em dois documentos reais
@@ -795,7 +885,14 @@ depois de dois bugs de integração achados e corrigidos no processo
 reconhecimento usava pontos que cortavam o início/fim do texto -- ver
 "`read`: a página inteira, de ponta a ponta" acima). Resta um defeito
 conhecido: espaço perdido dentro de uma região que o detector marcou como
-uma peça só.
+uma peça só. `layout.SplitCells` separa campo por espaçamento horizontal
+dentro de uma linha (rótulo de um lado, valor do outro), validado nos dois
+documentos reais; falta alinhar células de linhas diferentes na mesma
+coluna (a tabela de verdade). `read.ExtrairCampos` liga `extract` à saída
+de `read.Page` e fecha o ciclo completo pela primeira vez num documento
+real -- achou os 2 CNPJs e um valor monetário no PDF em alta resolução;
+falta um schema por tipo de documento (ver "`SplitCells`" e
+"`ExtrairCampos`" acima).
 
 ## Licença
 
