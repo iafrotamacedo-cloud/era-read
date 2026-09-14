@@ -187,89 +187,92 @@ Antes disso é infraestrutura.
 As fases 1, 2, 4 e 6 são geometria e processamento de imagem — não tocam em
 rede nenhuma e não dependem de nada fora da biblioteca padrão.
 
-## O motor de inferência: decisão em aberto
+## O motor de inferência
 
 As fases 3 (detecção) e 5 (reconhecimento) precisam rodar uma rede neural: ler
-um `.onnx`, executar o grafo. Esse motor já existe — `tensor`, `kernel`, `nn`,
-`onnx` e `graph` do projeto irmão [`era`](https://github.com/iafrotamacedo-cloud/era)
-não têm nada de específico de rosto, e já foram validados contra o ONNX
-Runtime na quinta casa decimal.
+um `.onnx`, executar o grafo. Este projeto **nasceu dentro do monorepo `era`**
+justamente para reusar isso sem duplicar -- `tensor`, `kernel`, `nn`, `onnx` e
+`graph` não têm nada de específico de rosto.
 
-Este projeto **nasceu dentro do monorepo `era`** justamente para reusar isso
-sem duplicar. A decisão de separar em repositório próprio significa que essa
-dependência agora atravessa repositório: ou a ERA READ importa
-`github.com/iafrotamacedo-cloud/era` como módulo (ainda zero dependência de
-*terceiros*, já que o `era` também só usa a biblioteca padrão), ou o trecho
-necessário é copiado para cá e mantido em paralelo, com o custo de sincronia
-que motivou o monorepo em primeiro lugar.
+**Decisão tomada em 14/09/2026: cópia, não importação.** `tensor/`, `kernel/`,
+`nn/`, `onnx/`, `graph/` e `internal/protowire/` vivem aqui dentro, como
+pacotes próprios deste repositório -- não como dependência do `era`. A ERA
+READ é **100% independente**: zero import de `github.com/iafrotamacedo-cloud/era`,
+zero risco de uma mudança ali quebrar isto aqui sem aviso, zero necessidade de
+coordenar com outra sessão para tocar no próprio motor de inferência.
 
-**Ainda não decidido — e não bloqueia nada hoje.** Nenhuma das sete fases
-construídas até agora (1, 2, 4 e as fatias de 6 e 7) toca em rede. A decisão
-só precisa ser tomada quando a fase 3 começar.
+O preço é o de sempre em cópia: as duas bases podem divergir com o tempo. Foi
+uma escolha deliberada em troca de nunca depender de decisão, de commit ou de
+CI de outro repositório para o próprio motor de inferência funcionar.
 
-O que a fase 3 vai precisar: um `.onnx` do detector DBNet (candidato:
-`PP-OCRv4` do PaddleOCR, Apache License 2.0 confirmada na fonte) e duas ops
-novas no executor de grafo do `era`. Isto não é mais suposição por leitura de
-código-fonte -- é o resultado de baixar o `ch_PP-OCRv4_det_infer.onnx` de
-verdade (espelho `SWHL/RapidOCR` no Hugging Face, sha256
-`d2a7720d...42f49da9`, conferido) e listar as ops com o proprio parser do
-`era/faces/onnx`, em 14/09/2026:
+### O que veio da cópia
 
-| Op | Ocorrências no grafo | Para quê | Estado |
-|---|---|---|---|
-| `ConvTranspose` | 2 | as duas camadas finais de upsample aprendido do `DBHead` | **implementado** (era, commit `7433493`) |
-| `HardSigmoid` | 10 | ativação do backbone (estilo MobileNetV3/PP-LCNet) -- não aparecia em `db_fpn.py`/`det_db_head.py` porque vem do módulo do backbone, que não tinha sido lido | **implementado** (era, commit `7433493`) |
+Trazido do `era` (`faces/tensor`, `faces/kernel`, `faces/nn`, `faces/onnx`,
+`faces/graph`, `internal/protowire`) no estado em que estava em 14/09/2026,
+com os caminhos de import reescritos para `github.com/iafrotamacedo-cloud/era-read/...`.
+**Não** veio `faces/graph/modelo_real_test.go`: é um teste de integração
+específico do SFace (reconhecimento facial) contra o ONNX Runtime, sem
+relação com este motor.
+
+O `faces/onnx` e o `faces/graph` do `era` já tinham sido validados contra o
+ONNX Runtime na quinta casa decimal (com um modelo de rosto) antes desta
+cópia -- essa prova não se repete aqui automaticamente, mas o código é
+literalmente o mesmo.
+
+### As ops que faltavam já vieram implementadas
+
+O motor de inferência precisava de duas ops que o `faces/graph` do `era`
+ainda não tinha, e das duas o levantamento por leitura de código-fonte só
+achou uma -- a lista final só fechou testando o `.onnx` real do candidato
+(`ch_PP-OCRv4_det_infer`, espelho `SWHL/RapidOCR` no Hugging Face, sha256
+`d2a7720d...42f49da9`, conferido) e lendo as ops com o próprio parser:
+
+| Op | Ocorrências no grafo | Para quê |
+|---|---|---|
+| `ConvTranspose` | 2 | as duas camadas finais de upsample aprendido do `DBHead` |
+| `HardSigmoid` | 10 | ativação do backbone (estilo MobileNetV3/PP-LCNet) -- não aparecia em `db_fpn.py`/`det_db_head.py` porque vem do módulo do backbone, que não tinha sido lido |
 
 O resto do grafo (672 nós, 14 tipos de operação) já estava coberto: `Conv`,
 `BatchNormalization`, `Add`, `Mul`, `Div`, `Clip`, `Concat`, `Constant`,
-`GlobalAveragePool`, `Relu`, `Resize`, `Sigmoid` já eram suportados.
+`GlobalAveragePool`, `Relu`, `Resize`, `Sigmoid`.
 
-**As duas ops que faltavam foram implementadas em 14/09/2026**, a pedido
-direto do usuário nesta mesma sessão -- `ConvTranspose2D` com duas
-implementações independentes (uma que reúne, outra que distribui,
-cross-checadas nos testes) e `HardSigmoid` na forma de `montaClip`. O
-`faces/graph` do `era` agora cobre 100% das ops do `ch_PP-OCRv4_det_infer`.
+Implementadas antes da cópia, no `era` (e trazidas juntas): `ConvTranspose2D`
+com duas implementações independentes no `kernel` (uma que reúne, outra que
+distribui, cross-checadas nos testes) e `HardSigmoid` na forma de
+`montaClip`. `graph/` cobre 100% das ops do `ch_PP-OCRv4_det_infer`.
 
-A lição fica registrada: ler o código-fonte de duas peças do grafo (FPN e
-head) deu uma resposta incompleta porque não cobriu o backbone. Contra o
-`.onnx` real, o levantamento fechou certo.
+### Um segundo bug, que só o `.onnx` real revelou
 
-### O grafo monta e executa de ponta a ponta -- testado em 14/09/2026
-
-Rodar o `.onnx` real (via `replace` local para `era` num programa
-descartável, a mesma técnica usada para listar as ops) achou um segundo
-problema, que nenhuma leitura de código-fonte revelaria: o exportador
+Montar o grafo pela primeira vez, contra o modelo de verdade, achou um
+problema que nenhuma leitura de código-fonte alcançaria: o exportador
 `paddle2onnx` do PaddlePaddle grava **todos os pesos treinados como nós
 `Constant`**, não como `initializer` -- 0 initializers, 342 `Constant` no
 modelo real. `montaConstant` só registrava o valor como operação de
 execução, nunca como peso disponível na montagem; todo `Conv` logo depois
-de um `Constant` falhava. Corrigido no `era` (commit `ca47cee`, uma linha:
-`Constant` agora também alimenta `b.consts`).
+de um `Constant` falhava dizendo que a entrada "precisa ser um peso
+constante" -- mesmo sendo, na prática, exatamente isso. Corrigido (uma
+linha: `Constant` agora também alimenta o mapa de constantes da montagem,
+não só a execução), com teste de regressão em `graph_test.go`.
 
-Depois da correção:
+### O grafo monta e executa de ponta a ponta
+
+Confirmado com este próprio código, sem `replace` para repositório nenhum:
 
 ```
 Grafo montado com sucesso -- todas as ops foram reconhecidas.
 Executando com entrada aleatoria [1,3,640,640]...
-Execucao OK em 1.6572467s. Saida "sigmoid_0.tmp_0", forma [1 1 640 640], 409600 elementos.
+Execucao OK em 1.7458687s. Saida "sigmoid_0.tmp_0", forma [1 1 640 640], 409600 elementos.
 Faixa [0,1] confere com a saida de um Sigmoid (mapa de probabilidade).
 ```
 
-**O que isso prova:** o executor do `era` aguenta a arquitetura inteira do
-PP-OCRv4 -- 672 nós, 14 tipos de operação, sem erro de forma nem de op.
-**O que isso não prova:** que os valores saem certos. A entrada foi ruído
-aleatório, não uma imagem real com o pré-processamento que o modelo
-espera (normalização por média/desvio-padrão) -- por isso a saída ficou
-quase toda zero, o esperado para ruído, não um sinal de acerto ou erro.
-Validação numérica de verdade (contra ONNX Runtime, com imagem real,
-mesma normalização) é trabalho da fase 3 propriamente dita, não deste
-teste de fumaça.
-
-**Consequência prática para a decisão de importação:** já que o motor de
-inferência do `era` roda esta arquitetura específica sem faltar nada, a
-pergunta "importar como módulo ou copiar" deixou de ser especulativa --
-qualquer um dos dois caminhos funciona hoje. A escolha entre eles continua
-em aberto, mas por preferência de manutenção, não por incerteza técnica.
+**O que isso prova:** o executor aguenta a arquitetura inteira do PP-OCRv4 --
+672 nós, 14 tipos de operação, sem erro de forma nem de op. **O que isso não
+prova:** que os valores saem certos. A entrada foi ruído aleatório, não uma
+imagem real com o pré-processamento que o modelo espera (normalização por
+média/desvio-padrão) -- por isso a saída ficou quase toda zero, o esperado
+para ruído, não um sinal de acerto ou erro. Validação numérica de verdade
+(contra ONNX Runtime, com imagem real, mesma normalização) é trabalho da
+fase 3 propriamente dita, não deste teste de fumaça.
 
 ## Escolhas de modelo
 
@@ -315,11 +318,12 @@ go vet ./...
 ## Estado
 
 Fases 1, 2 e 4 prontas; fases 6 e 7 parciais (ver Roteiro). Fase 3
-(detecção) ainda não começou, mas as duas ops que faltavam
-(`ConvTranspose`, `HardSigmoid`) já foram implementadas no `faces/graph`
-do `era` — falta só escolher como importar esse motor através de
-repositório (ver "O motor de inferência" acima). O `.onnx` do candidato
-(`ch_PP-OCRv4_det_infer`) já foi baixado e conferido.
+(detecção) ainda não começou, mas o motor de inferência já está aqui dentro,
+independente, com as duas ops que faltavam implementadas e o grafo do
+candidato (`ch_PP-OCRv4_det_infer`, já baixado e conferido) montando e
+executando de ponta a ponta (ver "O motor de inferência" acima). Falta a
+implementação de verdade: pós-processamento do mapa de probabilidade em
+polígonos.
 
 ## Licença
 

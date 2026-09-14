@@ -5,10 +5,24 @@ arquitetura, o roteiro de fases e as decisões tomadas.
 
 Nasceu dentro do monorepo `era` (`iafrotamacedo-cloud/era`, em
 `documents/`) e saiu para repositório próprio em 14/09/2026, por decisão
-explícita do usuário. O `era` continua com `faces` e `maps`; o motor de
-inferência que as fases 3 e 5 vão precisar (`tensor`, `kernel`, `nn`,
-`onnx`, `graph`) mora lá, não aqui — como importar isso através de
-repositório é decisão em aberto, registrada no README.
+explícita do usuário. O `era` continua com `faces` e `maps`.
+
+**Este repositório é 100% independente do `era`.** O motor de inferência
+que as fases 3 e 5 precisam (`tensor`, `kernel`, `nn`, `onnx`, `graph`,
+`internal/protowire`) foi **copiado** para dentro daqui, não importado —
+decisão explícita do usuário, em 14/09/2026, depois de um CI quebrado no
+`era` por um teste alheio ter deixado claro o custo de depender de outro
+repositório para o próprio motor de inferência funcionar. Zero import de
+`github.com/iafrotamacedo-cloud/era` em lugar nenhum deste código — e é
+para continuar assim. Detalhe da cópia (o que veio, o que não veio, os
+dois bugs achados testando contra o `.onnx` real) no README, seção "O
+motor de inferência".
+
+**Nunca importe `github.com/iafrotamacedo-cloud/era`** neste repositório,
+mesmo que pareça o caminho mais curto para algo. Se `tensor`, `kernel`,
+`nn`, `onnx` ou `graph` precisarem de uma correção ou de uma op nova,
+o trabalho é **aqui dentro**, direto nos pacotes já copiados — não no
+`era`, e não via `replace`/dependência de volta para lá.
 
 ## Ambiente
 
