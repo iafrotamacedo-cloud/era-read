@@ -285,7 +285,7 @@ func TestReconhecerRegiaoCampoPequeno(t *testing.T) {
 	recGraph := redeReconhecimentoDeBrinquedo(t)
 	cs := recog.NewCharset([]string{"X", "Y"})
 
-	_, texto, _, ok := reconhecerRegiao(pagina, regioes[0], detect.Scale{X: 1, Y: 1}, recGraph, cs, DefaultOptions())
+	_, texto, _, _, _, ok := reconhecerRegiao(pagina, regioes[0], detect.Scale{X: 1, Y: 1}, recGraph, cs, DefaultOptions())
 	if !ok || texto == "" {
 		t.Errorf("regiao pequena e reta deveria ser reconhecida (ok=%v texto=%q)", ok, texto)
 	}

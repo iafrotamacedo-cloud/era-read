@@ -141,7 +141,7 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 | 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | **funcionando** — pré-processamento de linha, grafo e decodificação CTC validados com linha de texto real de documento da Frota Macedo (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais" abaixo) |
 | 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | **funcionando** — linhas e ordem de leitura de 1 coluna prontas; campo dentro de uma linha por espaçamento (`SplitCells`) validado nos dois documentos reais; colunas entre várias linhas por célula (`GroupTable`) ou por palavra (`GroupTableWords`) **implementadas e testadas**, com a tabela de itens dos documentos reais saindo em colunas reconhecíveis (1→7 colunas no PDF em alta resolução, ver "`GroupTableWords`" abaixo) |
 | — | `read` | liga `detect`+`dewarp`+`recog`+`layout` numa passagem só: página inteira → linhas de texto | **funcionando** — roda de ponta a ponta nos dois documentos reais da Frota Macedo já usados nas fases 3 e 5, com texto corretamente legível depois de quatro bugs de integração achados e corrigidos (ver "`read`: a página inteira", "Terceiro bug" e "Quarto bug" abaixo); resta um defeito conhecido, sem relação com os quatro (espaço perdido dentro de uma região que o detector marcou como uma peça só) |
-| 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; `read.ExtrairCampos` (achados livres), `read.ExtrairDAV` (schema da DAV, validado com documento real) e `read.ExtrairDANFE` (schema do DANFE, leiaute nacional do CONFAZ, testado só com texto sintético fiel ao leiaute -- nenhum DANFE real disponível ainda) cobrem os dois tipos de documento que a Frota Macedo vai ler por enquanto (ver "`ExtrairCampos` e `ExtrairDAV`" e "`ExtrairDANFE`" abaixo); falta validar o DANFE contra documento real |
+| 7 | `extract` / `read` / `contrato` | campos tipados por tipo de documento, JSON de lançamento e consumo de `filtro_read` | parcial — CNPJ, CPF, data e valor **prontos**; `read.ExtrairDAV` e `read.ExtrairDANFE` cobrem os dois tipos atuais; `read.ExtrairDocumento` escolhe o schema e `read.MontarLeitura` emite o JSON `contrato.LeituraERA` (campos **preenchidos**, não o A0 vazio do calibrador); `read.OptionsFromFiltro` aplica o payload de `filtro_read` sem I/O |
 
 A fase 4 (`dewarp`) foi adiantada fora de ordem porque só depende de
 `geom` — não de rede nem de decisão pendente. `geom.RemapCurve` amostra uma
@@ -1038,6 +1038,42 @@ quando algum acento aparece antes do rótulo) -- testado com esse caso
 específico (`TestApósEtiquetaComAcentoAntesNaoCorrompe`) depois de um
 primeiro rascunho ter errado exatamente isso.
 
+## Contrato de leitura e `filtro_read` -- 15/09/2026
+
+O motor continua biblioteca sem estado: não abre o Postgres ERA-READ, não
+chama Gemini, não importa o calibrador. O que mudou é o **gancho** que o
+FrotaHub usa no lançamento e na leitura seguinte.
+
+`read.Ler` devolve a página completa (linhas + regiões com score e texto +
+nível de dewarp). `read.MontarLeitura` fecha isso no JSON
+`contrato.LeituraERA` -- a mesma forma que o calibrador persiste imutável
+em `leitura_era`. O chamador preenche `id`, `nota_id`, `imagem_uri`,
+operador e instante; o motor preenche identidade (versão, hashes dos
+`.onnx`, limiares usados), regiões, `page_level` e **campos**.
+
+Isso fecha um drift com o calibrador: o contrato A0 nasceu quando ainda
+não havia recog, e documentava campos vazios. Hoje `ExtrairDocumento`
+escolhe DAV ou DANFE pelos rótulos da página e projeta emitente,
+destinatário, data, total e itens nos campos canônicos
+(`cnpj_emitente`, `cnpj_destinatario`, `cpf`, `data`, `total_centavos`).
+O passo 1 do funil (OCR × ERA 100% nesses campos) deixa de ser teórico
+no dia em que o FrotaHub gravar essa leitura.
+
+O caminho de volta é `filtro_read`. O REGEN publica um JSON de limiares e
+URIs de peso; o FrotaHub carrega os `.onnx` e chama
+`read.OptionsFromFiltro`. Campos omitidos (zero) não sobrescrevem o
+default da literatura. O motor não baixa arquivo, não lê a tabela, não
+grava versão nova.
+
+`layout.GroupLinesOpts` existe para o `overlap_fraction` do filtro chegar
+até o agrupamento de linhas -- `GroupLines` continua usando os constantes
+de sempre.
+
+Não entra neste repositório: funil OCR/Gemini/Groq, UI, schema SQL, job
+semanal, fine-tune. Isso é calibrador + REGEN + FrotaHub. O schema já
+está no projeto Supabase ERA-READ; não recriar, não copiar para o
+`frotahub-v2`.
+
 ## Escolhas de modelo
 
 **Detecção: DBNet, via PP-OCRv4 do PaddleOCR.** Pesquisado em 14/09/2026.
@@ -1132,7 +1168,11 @@ conferidos na fonte primária e em exemplos reais) -- mas ainda sem
 validação contra um DANFE real passando pelo pipeline, só texto sintético
 fiel ao leiaute (ver "`SplitCells`", "Quarto bug",
 "`GroupTable`"/"`GroupTableWords`", "`ExtrairCampos` e `ExtrairDAV`" e
-"`ExtrairDANFE`" acima).
+"`ExtrairDANFE`" acima). `read.ExtrairDocumento` escolhe DAV ou DANFE e
+`read.MontarLeitura` emite o JSON `contrato.LeituraERA` com esses campos
+preenchidos -- o gancho que o FrotaHub congela no lançamento e que o
+`filtro_read` usa na leitura seguinte (ver "Contrato de leitura e
+`filtro_read`" acima).
 
 ## Licença
 
