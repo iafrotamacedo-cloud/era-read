@@ -141,7 +141,7 @@ si duas vezes — alimenta o reconhecedor e decide o dewarp.
 | 5 | `recog` | SVTR + decodificação CTC, charset pt-BR | **funcionando** — pré-processamento de linha, grafo e decodificação CTC validados com linha de texto real de documento da Frota Macedo (ver "SVTR: o grafo já roda" e "Validado com duas linhas reais" abaixo) |
 | 6 | `layout` | linhas, colunas, tabelas, ordem de leitura | **funcionando** — linhas e ordem de leitura de 1 coluna prontas; campo dentro de uma linha por espaçamento (`SplitCells`) validado nos dois documentos reais; colunas entre várias linhas por célula (`GroupTable`) ou por palavra (`GroupTableWords`) **implementadas e testadas**, com a tabela de itens dos documentos reais saindo em colunas reconhecíveis (1→7 colunas no PDF em alta resolução, ver "`GroupTableWords`" abaixo) |
 | — | `read` | liga `detect`+`dewarp`+`recog`+`layout` numa passagem só: página inteira → linhas de texto | **funcionando** — roda de ponta a ponta nos dois documentos reais da Frota Macedo já usados nas fases 3 e 5, com texto corretamente legível depois de quatro bugs de integração achados e corrigidos (ver "`read`: a página inteira", "Terceiro bug" e "Quarto bug" abaixo); resta um defeito conhecido, sem relação com os quatro (espaço perdido dentro de uma região que o detector marcou como uma peça só) |
-| 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; `read.ExtrairCampos` (achados livres) e `read.ExtrairDAV` (schema da DAV: emitente, destinatário, número, data, totais, itens em coluna via `GroupTableWords`) ligam isso à saída de `read.Page`, validados no PDF em alta resolução com emitente/destinatário/número/data/total corretos e itens em 7 colunas reconhecíveis (ver "`ExtrairCampos` e `ExtrairDAV`" abaixo); falta schema para outros tipos de documento |
+| 7 | `extract` | campos tipados por tipo de documento | parcial — CNPJ, CPF, data e valor monetário **prontos**; `read.ExtrairCampos` (achados livres), `read.ExtrairDAV` (schema da DAV, validado com documento real) e `read.ExtrairDANFE` (schema do DANFE, leiaute nacional do CONFAZ, testado só com texto sintético fiel ao leiaute -- nenhum DANFE real disponível ainda) cobrem os dois tipos de documento que a Frota Macedo vai ler por enquanto (ver "`ExtrairCampos` e `ExtrairDAV`" e "`ExtrairDANFE`" abaixo); falta validar o DANFE contra documento real |
 
 A fase 4 (`dewarp`) foi adiantada fora de ordem porque só depende de
 `geom` — não de rede nem de decisão pendente. `geom.RemapCurve` amostra uma
@@ -975,6 +975,69 @@ estruturada (`GroupTable` não segmenta em colunas neste formato de
 linha, ver acima) -- os dois registrados como o que realmente falta antes
 de virar produto, não escondidos atrás de um resultado só do melhor caso.
 
+## `ExtrairDANFE`: schema do segundo tipo de documento -- 14/09/2026
+
+A Frota Macedo vai ler dois tipos de documento por enquanto: a DAV (já
+coberta acima -- documento próprio do sistema de PDV deles, sem padrão
+entre empresas) e o **DANFE**, o Documento Auxiliar da Nota Fiscal
+Eletrônica -- esse sim com leiaute único, nacional, definido pelo CONFAZ.
+`read.ExtrairDANFE` é o segundo schema, ao lado de `ExtrairDAV`.
+
+**Fonte dos rótulos:** o Anexo II do Manual de Orientação do Contribuinte
+da NF-e -- conferido na fonte primária (reproduzido como anexo de norma
+estadual, ex. RICMS/RJ Anexo CI, que cita "Art. 287, XXXIII, do RICMS" e
+inclui o leiaute completo, campo a campo) -- mais cerca de dez exemplos
+reais (blogs de contabilidade, geradores de DANFE, imagens de documentos
+preenchidos) buscados em 14/09/2026 para confirmar que os rótulos do
+leiaute oficial são de fato os impressos na prática, não só o que a norma
+prescreve. Rótulos usados: `NOME/RAZÃO SOCIAL`, `CNPJ/CPF`,
+`NATUREZA DA OPERAÇÃO`, `N.º`/`Nº`, `SÉRIE`, `DATA DA EMISSÃO`,
+`DATA DA SAÍDA/ENTRADA`, `PROTOCOLO DE AUTORIZAÇÃO DE USO`,
+`DADOS DO PRODUTO`, e os onze rótulos do quadro "Cálculo do Imposto"
+(`VALOR TOTAL DOS PRODUTOS`, `VALOR TOTAL DA NOTA`, `VALOR DO ICMS`,
+`VALOR DO FRETE`... -- ver `EtiquetasImpostoDANFE`).
+
+**Um campo que o leiaute genuinamente não rotula:** ao contrário do
+destinatário (rotulado `NOME/RAZÃO SOCIAL`) e da DAV (rotulada
+`Razão Social:`), o quadro "Identificação do emitente" do DANFE é só o
+espaço reservado para o papel timbrado da empresa -- logotipo, nome,
+endereço -- sem NENHUM rótulo de texto precedendo o nome. Não tem como
+achar por rótulo o que o documento não rotula; `Emitente.Nome` fica vazio
+de propósito, documentado no código, não uma falha silenciosa. O CNPJ do
+emitente sai normal, porque esse tem rótulo (`CNPJ`) na mesma faixa --
+distinguido do CNPJ do destinatário por posição: o quadro do emitente vem
+antes de `DESTINATÁRIO/REMETENTE` no leiaute, e `ExtrairDANFE` para de
+procurar CNPJ de emitente assim que essa palavra aparece.
+
+**A chave de acesso** (44 dígitos que identificam a NF-e de forma única,
+consultável em `www.nfe.fazenda.gov.br`) não tem um rótulo textual fixo
+que valha a pena procurar -- é achada por padrão: 11 grupos de 4 dígitos
+seguidos, com ou sem espaço entre grupos, do jeito que a maioria dos
+geradores de DANFE já imprime (`3508 0599 9990 9091 0270 5500 1000 0000
+0151 8005 1273`, um exemplo real de documento de teste).
+
+**Diferença de confiança em relação à `ExtrairDAV`, registrada sem
+rodeio:** este schema NÃO foi testado contra um DANFE real passando pelo
+pipeline de detecção e reconhecimento deste motor -- nenhum documento
+desse tipo estava disponível nesta sessão, só o texto sintético fiel ao
+leiaute oficial (testes em `danfe_test.go`). A DAV foi validada com
+documentos reais rodados pelo pipeline inteiro; o DANFE, por enquanto, só
+com a garantia de que os rótulos procurados são os que o leiaute nacional
+de fato usa. Fica marcado como pendência: validar contra um DANFE real
+assim que um estiver disponível, do mesmo jeito que a DAV já foi.
+
+**Efeito colateral bom, achado construindo isto:** `apósEtiqueta` e
+`cortarAntesDe` (usados por `ExtrairCampos`, `ExtrairDAV` e agora
+`ExtrairDANFE`) passaram a ignorar acento na comparação de rótulo, não só
+maiúscula/minúscula -- o reconhecedor já trocou acento errado mais de uma
+vez neste projeto ("Razäo" em vez de "Razão", ver fase 5), e um rótulo
+como `NATUREZA DA OPERAÇÃO` tem acento demais para arriscar comparação
+exata. A busca agora compara por RUNE, não por byte (um acento em UTF-8
+ocupa mais de 1 byte; cortar por índice de byte cortaria o texto errado
+quando algum acento aparece antes do rótulo) -- testado com esse caso
+específico (`TestApósEtiquetaComAcentoAntesNaoCorrompe`) depois de um
+primeiro rascunho ter errado exatamente isso.
+
 ## Escolhas de modelo
 
 **Detecção: DBNet, via PP-OCRv4 do PaddleOCR.** Pesquisado em 14/09/2026.
@@ -1063,9 +1126,13 @@ ExtrairCampos` e `read.ExtrairDAV` ligam `extract` à saída de `read.Page`
 e fecham o ciclo completo pela primeira vez num documento real --
 emitente, destinatário, número do documento, data, total e a tabela de
 itens em coluna, todos corretos ou reconhecíveis no PDF em alta
-resolução; falta schema para outros tipos de documento além da DAV (ver
-"`SplitCells`", "Quarto bug", "`GroupTable`"/"`GroupTableWords`" e
-"`ExtrairCampos` e `ExtrairDAV`" acima).
+resolução. `read.ExtrairDANFE` cobre o segundo tipo de documento que a
+Frota Macedo vai ler (o DANFE, leiaute nacional do CONFAZ, rótulos
+conferidos na fonte primária e em exemplos reais) -- mas ainda sem
+validação contra um DANFE real passando pelo pipeline, só texto sintético
+fiel ao leiaute (ver "`SplitCells`", "Quarto bug",
+"`GroupTable`"/"`GroupTableWords`", "`ExtrairCampos` e `ExtrairDAV`" e
+"`ExtrairDANFE`" acima).
 
 ## Licença
 

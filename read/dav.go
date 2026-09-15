@@ -137,14 +137,19 @@ func ExtrairDAV(linhas []layout.Line) DAV {
 }
 
 // cortarAntesDe devolve o prefixo de s antes da primeira ocorrencia de
-// marcador (sem diferenciar maiusculas/minusculas); devolve s inteiro se
+// marcador (sem diferenciar maiusculas/minusculas nem acento -- ver
+// indexNormalizado/removerAcentos, em campos.go); devolve s inteiro se
 // marcador nao aparecer.
 func cortarAntesDe(s, marcador string) string {
-	idx := strings.Index(strings.ToLower(s), strings.ToLower(marcador))
+	idx := indexNormalizado(s, marcador)
 	if idx < 0 {
 		return s
 	}
-	return s[:idx]
+	origRunes := []rune(s)
+	if idx > len(origRunes) {
+		idx = len(origRunes)
+	}
+	return string(origRunes[:idx])
 }
 
 // primeiroCNPJOuCPFApos acha o primeiro CNPJ ou CPF valido no texto que

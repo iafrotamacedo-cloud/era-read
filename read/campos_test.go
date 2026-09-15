@@ -100,3 +100,34 @@ func TestExtrairCamposEtiquetaAusenteNaoEntra(t *testing.T) {
 		t.Errorf("Valores = %v, quero nenhum (nenhuma etiqueta conhecida na linha)", c.Valores)
 	}
 }
+
+func TestIndexNormalizadoIgnoraAcentoEMaiuscula(t *testing.T) {
+	casos := []struct {
+		s, alvo string
+		quero   int
+	}{
+		{"Razão Social: X", "Razao Social", 0},
+		{"RAZÃO SOCIAL: X", "razao social", 0},
+		{"Identificacäo do Emitente", "identificacao", 0}, // acento errado (ä em vez de ã) tambem cai
+		{"CNPJ/CPF: 123", "xyz", -1},
+	}
+	for _, c := range casos {
+		if got := indexNormalizado(c.s, c.alvo); got != c.quero {
+			t.Errorf("indexNormalizado(%q, %q) = %d, quero %d", c.s, c.alvo, got, c.quero)
+		}
+	}
+}
+
+// TestApósEtiquetaComAcentoAntesNaoCorrompe cobre o motivo de comparar por
+// RUNE, nao por byte: um acento antes do rotulo ocupa mais de 1 byte em
+// UTF-8, e cortar por indice de byte no meio de um caractere quebraria o
+// texto (ou erraria a posicao) quando o rotulo vem depois de algum acento.
+func TestApósEtiquetaComAcentoAntesNaoCorrompe(t *testing.T) {
+	got, ok := apósEtiqueta("Razão Social: RODRIGUES LTDA CNPJ:123", "CNPJ:")
+	if !ok {
+		t.Fatal("deveria ter achado a etiqueta CNPJ:")
+	}
+	if want := "123"; got != want {
+		t.Errorf("resto = %q, quero %q", got, want)
+	}
+}
