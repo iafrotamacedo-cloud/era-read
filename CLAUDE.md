@@ -112,3 +112,11 @@ ajustada para permitir só ela — não afrouxar de forma geral.
 Este motor não guarda peso de modelo nenhum. Quando a fase 3 ou 5
 precisarem de um `.onnx`, ele é trazido por quem usa a biblioteca, nunca
 commitado aqui — `*.onnx` já está no `.gitignore`.
+
+## Contrato de lançamento
+
+O JSON `contrato.LeituraERA` é o que o FrotaHub persiste. Este repo só
+emite e consome limiares (`OptionsFromFiltro`). Não abre o Supabase
+ERA-READ, não chama Gemini, não importa o calibrador nem
+`github.com/iafrotamacedo-cloud/era`. Schema e funil moram no ERA AUDITOR;
+não recriar tabelas aqui.

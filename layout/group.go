@@ -16,6 +16,22 @@ const OverlapFraction = 0.5
 // sobre por que a faixa cresce, e por que precisa de um teto.
 const MaxDriftFactor = 2.0
 
+// Options ajusta os limiares de GroupLines. Os valores default sao as
+// constantes deste pacote, nao uma calibracao medida -- o filtro_read
+// publicado pelo REGEN e quem passa numeros medidos, quando houver.
+type Options struct {
+	OverlapFraction float64
+	MaxDriftFactor  float64
+}
+
+// DefaultOptions devolve OverlapFraction e MaxDriftFactor deste pacote.
+func DefaultOptions() Options {
+	return Options{
+		OverlapFraction: OverlapFraction,
+		MaxDriftFactor:  MaxDriftFactor,
+	}
+}
+
 // GroupLines agrupa palavras soltas em linhas de texto usando so a
 // geometria (sobreposicao vertical das caixas), nunca o conteudo. Depois
 // ordena as palavras de cada linha da esquerda para a direita, e as
@@ -53,8 +69,22 @@ const MaxDriftFactor = 2.0
 // palavras formam este campo dentro da linha"), cada uma com o seu limiar
 // calibrado à parte.
 func GroupLines(words []Word) []Line {
+	return GroupLinesOpts(words, DefaultOptions())
+}
+
+// GroupLinesOpts e GroupLines com limiares vindos de fora -- o caminho
+// que o filtro_read usa. OverlapFraction ou MaxDriftFactor zero caem no
+// default: zero nao e um limiar util (nunca agruparia, ou nunca deixaria
+// a faixa crescer).
+func GroupLinesOpts(words []Word, opts Options) []Line {
 	if len(words) == 0 {
 		return nil
+	}
+	if opts.OverlapFraction <= 0 {
+		opts.OverlapFraction = OverlapFraction
+	}
+	if opts.MaxDriftFactor <= 0 {
+		opts.MaxDriftFactor = MaxDriftFactor
 	}
 
 	ordenadas := append([]Word(nil), words...)
@@ -83,7 +113,7 @@ func GroupLines(words []Word) []Line {
 				continue
 			}
 			fracao := sobreposicao / menorAltura
-			if fracao <= OverlapFraction {
+			if fracao <= opts.OverlapFraction {
 				continue
 			}
 			// Sobreposicao vertical alta tambem acontece entre duas linhas
@@ -111,7 +141,7 @@ func GroupLines(words []Word) []Line {
 			l.palavras = append(l.palavras, w)
 
 			novoMin, novoMax := math.Min(l.atualMin, wMin), math.Max(l.atualMax, wMax)
-			if novoMax-novoMin <= l.ancoraAltura*MaxDriftFactor {
+			if novoMax-novoMin <= l.ancoraAltura*opts.MaxDriftFactor {
 				l.atualMin, l.atualMax = novoMin, novoMax
 			}
 		}

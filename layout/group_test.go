@@ -188,3 +188,17 @@ func TestLineBounds(t *testing.T) {
 		t.Errorf("max = %v, quero {30,20}", max)
 	}
 }
+
+func TestGroupLinesOptsLimiarApertadoSepara(t *testing.T) {
+	entrada := []Word{
+		palavra("A", 0, 10, 20, 20),  // faixa [10,20]
+		palavra("B", 25, 12, 45, 22), // sobreposicao 0.8 -- passa o default 0.5
+	}
+	if n := len(GroupLines(entrada)); n != 1 {
+		t.Fatalf("default agrupou %d linhas, quero 1", n)
+	}
+	linhas := GroupLinesOpts(entrada, Options{OverlapFraction: 0.85})
+	if len(linhas) != 2 {
+		t.Fatalf("limiar 0.85 agrupou %d linhas, quero 2 (o filtro_read precisa conseguir apertar)", len(linhas))
+	}
+}

@@ -29,6 +29,14 @@ type Options struct {
 	PreDetect  detect.PreprocessOptions
 	PreRecog   recog.PreprocessOptions
 	Thresholds dewarp.Thresholds
+	Layout     layout.Options
+
+	// Identidade preenchida pelo chamador: versao do modulo que importou
+	// este motor e hashes dos .onnx que ele carregou. O motor nao calcula
+	// hash de arquivo -- nao abre disco.
+	MotorVersao string
+	ONNXDetHash string
+	ONNXRecHash string
 
 	// PontosPorBorda controla em quantos pontos cada borda (cima e baixo)
 	// de uma região detectada é reamostrada antes de medir a deformação e
@@ -66,6 +74,7 @@ func DefaultOptions() Options {
 		PreDetect:               detect.DefaultPreprocessOptions(),
 		PreRecog:                recog.DefaultPreprocessOptions(),
 		Thresholds:              dewarp.DefaultThresholds(),
+		Layout:                  layout.DefaultOptions(),
 		PontosPorBorda:          8,
 		FatorDeformacaoRelativo: 0.3,
 	}
@@ -80,23 +89,34 @@ func DefaultOptions() Options {
 // quem usa a biblioteca decide qual modelo trazer. cs é o dicionário do
 // modelo de reconhecimento (ver recog.NewCharset).
 func Page(src image.Image, detGraph, recGraph *graph.Graph, cs recog.Charset, opts Options) ([]layout.Line, error) {
-	if err := exigeEntradaSaidaUnica(detGraph, "deteccao"); err != nil {
+	p, err := Ler(src, detGraph, recGraph, cs, opts)
+	if err != nil {
 		return nil, err
+	}
+	return p.Linhas, nil
+}
+
+// Ler e Page, mas devolve a pagina completa (regioes, formas, nivel) para
+// o chamador montar contrato.LeituraERA. Page continua existindo para quem
+// so quer as linhas.
+func Ler(src image.Image, detGraph, recGraph *graph.Graph, cs recog.Charset, opts Options) (Pagina, error) {
+	if err := exigeEntradaSaidaUnica(detGraph, "deteccao"); err != nil {
+		return Pagina{}, err
 	}
 
 	entradaDet, escala, err := detect.Preprocess(src, opts.PreDetect)
 	if err != nil {
-		return nil, fmt.Errorf("read: pre-processar deteccao: %w", err)
+		return Pagina{}, fmt.Errorf("read: pre-processar deteccao: %w", err)
 	}
 
 	ws := nn.NewWorkspace()
 	saidasDet, err := detGraph.Run(ws, map[string]*tensor.Tensor{detGraph.Inputs()[0]: entradaDet})
 	if err != nil {
-		return nil, fmt.Errorf("read: rodar grafo de deteccao: %w", err)
+		return Pagina{}, fmt.Errorf("read: rodar grafo de deteccao: %w", err)
 	}
 	saidaDet := saidasDet[detGraph.Outputs()[0]]
 	if saidaDet.Rank() != 4 {
-		return nil, fmt.Errorf("read: saida da deteccao tem forma %v, esperava [N,1,H,W]", saidaDet.Shape)
+		return Pagina{}, fmt.Errorf("read: saida da deteccao tem forma %v, esperava [N,1,H,W]", saidaDet.Shape)
 	}
 	prob := &imgproc.Gray{
 		Pix: saidaDet.Flat(), W: saidaDet.Shape[3], H: saidaDet.Shape[2], Stride: saidaDet.Shape[3],
@@ -104,7 +124,7 @@ func Page(src image.Image, detGraph, recGraph *graph.Graph, cs recog.Charset, op
 
 	regioes := detect.Detect(prob, opts.Detector)
 
-	return ProcessarRegioes(src, regioes, escala, recGraph, cs, opts)
+	return ProcessarPagina(src, regioes, escala, recGraph, cs, opts)
 }
 
 // ProcessarRegioes retifica e reconhece regiões já detectadas -- o que
@@ -112,20 +132,11 @@ func Page(src image.Image, detGraph, recGraph *graph.Graph, cs recog.Charset, op
 // testar a retificação e o reconhecimento sem depender de uma rede de
 // detecção de verdade, e para quem já tem as regiões vindas de outro lugar.
 func ProcessarRegioes(src image.Image, regioes []detect.Result, escala detect.Scale, recGraph *graph.Graph, cs recog.Charset, opts Options) ([]layout.Line, error) {
-	if err := exigeEntradaSaidaUnica(recGraph, "reconhecimento"); err != nil {
+	p, err := ProcessarPagina(src, regioes, escala, recGraph, cs, opts)
+	if err != nil {
 		return nil, err
 	}
-
-	var palavras []layout.Word
-	for _, regiao := range regioes {
-		linha, texto, confianca, ok := reconhecerRegiao(src, regiao, escala, recGraph, cs, opts)
-		if !ok || texto == "" {
-			continue
-		}
-		palavras = append(palavras, layout.Word{Box: linha, Text: texto, Confidence: confianca})
-	}
-
-	return layout.GroupLines(palavras), nil
+	return p.Linhas, nil
 }
 
 // reconhecerRegiao mede a deformação de uma região, retifica no nível
@@ -138,20 +149,20 @@ func ProcessarRegioes(src image.Image, regioes []detect.Result, escala detect.Sc
 // linha (a região já convertida para o formato cima/baixo e na escala da
 // página original) volta junto mesmo em caso de sucesso, para
 // ProcessarRegioes não precisar refazer a mesma conversão.
-func reconhecerRegiao(src image.Image, regiao detect.Result, escala detect.Scale, recGraph *graph.Graph, cs recog.Charset, opts Options) (linha geom.Polygon, texto string, confianca float32, ok bool) {
+func reconhecerRegiao(src image.Image, regiao detect.Result, escala detect.Scale, recGraph *graph.Graph, cs recog.Charset, opts Options) (linha geom.Polygon, texto string, confianca float32, forma dewarp.LineShape, nivel dewarp.Level, ok bool) {
 	linhaRede, err := detect.ToLinePolygon(regiao.Polygon, opts.PontosPorBorda)
 	if err != nil {
-		return nil, "", 0, false
+		return nil, "", 0, dewarp.LineShape{}, 0, false
 	}
 	linha = detect.Rescale(linhaRede, escala)
 
 	baseline, err := dewarp.ExtractBaseline(linha)
 	if err != nil {
-		return nil, "", 0, false
+		return nil, "", 0, dewarp.LineShape{}, 0, false
 	}
-	forma, err := dewarp.MeasureLine(baseline)
+	forma, err = dewarp.MeasureLine(baseline)
 	if err != nil {
-		return nil, "", 0, false
+		return nil, "", 0, dewarp.LineShape{}, 0, false
 	}
 
 	min, max := linha.Bounds()
@@ -159,7 +170,7 @@ func reconhecerRegiao(src image.Image, regiao detect.Result, escala detect.Scale
 	altura := arredondaPositivo(max.Y - min.Y)
 
 	th := limiaresEfetivos(opts.Thresholds, max.Y-min.Y, opts.FatorDeformacaoRelativo)
-	nivel := dewarp.Classify(forma, th)
+	nivel = dewarp.Classify(forma, th)
 
 	var recorte image.Image
 	switch nivel {
@@ -188,29 +199,29 @@ func reconhecerRegiao(src image.Image, regiao detect.Result, escala detect.Scale
 		outH := arredondaPositivo(acima + abaixo)
 		recorte, err = recortarCurva(src, baseline, largura, outH, acima, abaixo)
 	default: // N3: precisa de rede, ainda nao implementado (ver README)
-		return nil, "", 0, false
+		return nil, "", 0, forma, nivel, false
 	}
 	if err != nil {
-		return nil, "", 0, false
+		return nil, "", 0, forma, nivel, false
 	}
 
 	entrada, err := recog.Preprocess(recorte, opts.PreRecog)
 	if err != nil {
-		return nil, "", 0, false
+		return nil, "", 0, forma, nivel, false
 	}
 
 	ws := nn.NewWorkspace()
 	saidas, err := recGraph.Run(ws, map[string]*tensor.Tensor{recGraph.Inputs()[0]: entrada})
 	if err != nil {
-		return nil, "", 0, false
+		return nil, "", 0, forma, nivel, false
 	}
 	saida := saidas[recGraph.Outputs()[0]]
 
 	resultados, err := recog.DecodeCTC(saida, cs)
 	if err != nil || len(resultados) == 0 {
-		return nil, "", 0, false
+		return nil, "", 0, forma, nivel, false
 	}
-	return linha, resultados[0].Texto, resultados[0].Confianca, true
+	return linha, resultados[0].Texto, resultados[0].Confianca, forma, nivel, true
 }
 
 // limiaresEfetivos escala RetoPx/CurvoPx pela altura da regiao (ver o
