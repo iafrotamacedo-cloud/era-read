@@ -82,6 +82,35 @@ func TestExtrairDAVSemRotulosConhecidosFicaZerado(t *testing.T) {
 	}
 }
 
+// TestExtrairDAVCabecalhoIlegivelNaoPegaEnderecoDoRodape cobre um DAV
+// real testado em 15/09/2026: o cabeçalho da tabela de itens
+// ("Produto/Endereço Embalagem Quantidade...") saiu tão garbled pelo
+// reconhecedor que virou um único blob ilegível, sem "endere" nem
+// "quantidade" sobreviverem -- a busca pelo início da tabela continuava
+// e achava "Endereço:" no RODAPÉ (o endereço de entrega, campo
+// diferente), fazendo a tabela de itens sair cheia com texto do rodapé
+// (vendedor, telefone, observação) em vez do item de verdade. Corrigido
+// parando a busca do cabeçalho assim que "Plano de Pagamento" ou "Dados
+// Complementares" aparece -- os dois só vêm DEPOIS da tabela no leiaute.
+func TestExtrairDAVCabecalhoIlegivelNaoPegaEnderecoDoRodape(t *testing.T) {
+	linhas := []layout.Line{
+		linhaDeTexto("Razao Social: RODRIGUES MATERIAL LTDA-ME CNPJ:14788633000110"),
+		linhaDeTexto("Nome: FROTA MACEDO ENGENHARIA EIRELI CPF/CNPJ: 27363223000170"),
+		linhaDeTexto("N° do Documento: 0000018860"),
+		linhaDeTexto("-nnoaaoennLuantoaoPPrecoUniaroUese"), // cabecalho ilegivel
+		linhaDeTexto("00000000001795 - ARGAMASSA AC3 15KG TOP10 UN 2,000 31,90 0,00 63,80"),
+		linhaDeTexto("Total a pagar: 63,80"),
+		linhaDeTexto("Plano de Pagamento"),
+		linhaDeTexto("Dados Complementares"),
+		linhaDeTexto("Endereco: AVENIDA ENGENHEIRO HEITOR Bairro: CIDADE DOS FUNCIONAR"),
+		linhaDeTexto("Vendedor: PEDRO RODRIGUES Dt. Prev: 06/08/2026"),
+	}
+	d := ExtrairDAV(linhas)
+	if len(d.Itens.Rows) != 0 {
+		t.Errorf("Itens.Rows = %v, queria vazio (cabecalho ilegivel -- melhor vazio que pegar o rodape)", d.Itens.Rows)
+	}
+}
+
 func TestCortarAntesDe(t *testing.T) {
 	casos := []struct {
 		s, marcador, quero string

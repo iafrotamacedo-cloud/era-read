@@ -48,6 +48,7 @@ func ExtrairDAV(linhas []layout.Line) DAV {
 	d.Totais = make(map[string]extract.Money)
 
 	inicioItens, fimItens := -1, -1
+	passouRodape := false
 
 	for i, l := range linhas {
 		texto := l.Text()
@@ -101,6 +102,21 @@ func ExtrairDAV(linhas []layout.Line) DAV {
 			}
 		}
 
+		// "Plano de Pagamento"/"Dados Complementares" so aparecem DEPOIS
+		// da tabela de itens no leiaute da DAV -- uma vez vistos, para de
+		// procurar o cabecalho da tabela. Sem isso, um documento real
+		// testado em 15/09/2026 em que o cabecalho saiu tao garbled pelo
+		// reconhecedor que nem "endere" nem "quantidade" sobreviveram
+		// (virou um unico blob ilegivel) fazia a busca continuar e achar
+		// "Endereco:" no RODAPE (o endereco de entrega, um campo
+		// completamente diferente) -- a tabela de itens saia cheia com
+		// texto do rodape (vendedor, telefone, observacao) em vez do item
+		// de verdade.
+		if strings.Contains(strings.ToLower(texto), "plano de pagamento") ||
+			strings.Contains(strings.ToLower(texto), "dados complementares") {
+			passouRodape = true
+		}
+
 		// A tabela de itens fica entre o cabecalho (a linha que titula as
 		// colunas: "Produto/Endereco Embalagem Quantidade...") e a
 		// primeira linha de totais -- a mesma etiqueta que EtiquetasValor
@@ -108,7 +124,7 @@ func ExtrairDAV(linhas []layout.Line) DAV {
 		// "endereco"/"quantidade" em vez de "produto": num documento real
 		// esse rotulo saiu truncado ("oduto/Endere", faltando o "Pr" do
 		// inicio -- ver README, fase 5) e "produto" sozinho nao bate mais.
-		if inicioItens == -1 && (strings.Contains(strings.ToLower(texto), "endere") ||
+		if inicioItens == -1 && !passouRodape && (strings.Contains(strings.ToLower(texto), "endere") ||
 			strings.Contains(strings.ToLower(texto), "quantidade")) {
 			inicioItens = i + 1
 		}
